@@ -208,6 +208,7 @@ panel. In `--nogui` mode a request is required on the command line.
 | `--debug` | Dump the full conversation history before every LLM call (see [Debugging](#debugging)). |
 | `--nogui` | Run in direct CLI mode without TUI (original behaviour). No session file is read or written unless `--session` is given. |
 | `--no-mouse` | TUI without mouse capture, leaving selection and paste to the terminal itself. |
+| `--no-markdown` | Show the agent's replies raw in the TUI, without rendering their markdown (headings, emphasis, lists, code blocks, tables). |
 | `--session` | Session file mirroring the conversation history (default: `./.aicsession`). |
 | `--no-session` | Disable session persistence (nothing is written or loaded). |
 | `--disable-sandbox` | Disable the OS-level Landlock sandbox (Linux only). |
@@ -218,7 +219,7 @@ panel. In `--nogui` mode a request is required on the command line.
 | `--loop FILE` | Ralph loop over a prompt file (see [Ralph loop mode](#ralph-loop-mode)). |
 | `--max-iterations` | Maximum `--loop` iterations (default: `10`; `0` = unlimited). |
 | `--verify CMD` | A command (e.g. `pytest -q`) that must exit 0 before a completion signal is accepted (see [The verification gate](#the-verification-gate)). |
-| `--json` | Emit every event as one JSON object per line on stdout (implies `--nogui`). |
+| `--json` | Emit every event as one JSON object per line on stdout (implies `--nogui`). Replies come as one `LLM_MESSAGE` event with the whole text, not token by token; there are no `TOKEN_USAGE` events, the run's token totals come in the final `SHUTDOWN` event (`usage`). |
 | `request` | The task request (positional). In `--nogui` mode it is required unless `--loop` is given; when stdin is piped it is read from there. |
 
 In `--nogui` mode the exit status tells scripts how the run ended: `0` task
@@ -328,7 +329,11 @@ The default Textual interface is a Norton-Commander-style split screen:
   that was on screen is selected again, each on the right-pane tab it showed.
   The sandbox is shared: it is applied once, to the whole process, at startup.
 - **Left pane — Agent**: the model's streamed answer (live, word-wrapped and
-  re-wrapped when the terminal is resized), its thinking in dim italics
+  re-wrapped when the terminal is resized; its markdown is rendered as it
+  streams: headings without their `#`s, bold, italics, code, bullets, quotes
+  and rules, and a table is redrawn with aligned columns, wrapped to the pane,
+  once its last row is in; text without markdown shows as written, and
+  `--no-markdown` shows every reply raw), its thinking in dim italics
   (it stays open after it ends, so it doesn't roll up while you read it, and
   folds to `▸ ✻ thinking · N lines` once all of it has scrolled out of view;
   click to unfold), each
@@ -343,7 +348,7 @@ The default Textual interface is a Norton-Commander-style split screen:
   A click on the bottom border slides the whole list open under the pane
   (done, current and pending items; a click or `Esc` closes it); `/todo`
   prints it in the pane.
-- **Right pane — Status / Shell / Tools** of the current agent tab: three tabs
+- **Right pane — Status / Shell / Tools / Help** of the current agent tab: four tabs
   (click them or press `F3` to cycle; each agent tab remembers its choice). A
   hidden tab with news is marked: `Tools ●` for new output, `Status (2)` for
   files changed out of sight.
@@ -369,6 +374,9 @@ The default Textual interface is a Norton-Commander-style split screen:
   *Shell* is an embedded, colored interactive shell with scrollback. It
   is independent of the agent: a `cd` there never changes the directory the
   agent works in, which stays the one AI-Commander was started in.
+  *Help* shows the version and the project's home page, a short tutorial,
+  the keys, mouse and commands (as `F1` does) and the command-line options;
+  it scrolls.
 - **Divider**: the bar between the two panes can be dragged to resize them;
   a double-click splits them evenly again.
 - **Prompt**: a multi-line input box (it grows with its content).
@@ -381,10 +389,11 @@ The default Textual interface is a Norton-Commander-style split screen:
 
 The agent runs in a background thread and communicates with the UI through a
 queue; the UI never blocks on the agent. Typing while the agent works queues a
-steering message that is delivered at its next step. Once the agent reads it, it
-shows in the agent pane under its own `── You · suggestion · 14:02:31 ──` rule,
-indented, so it is easy to find when scrolling back; so does a suggestion typed
-when rejecting a command.
+steering message that is delivered at its next step. It shows at once in the
+agent pane, even while a command runs or the model thinks, under its own
+`── You · suggestion · 14:02:31 ──` rule, indented, so it is easy to find when
+scrolling back; `↳ the agent read your suggestion` follows when the agent gets
+it. A suggestion typed when rejecting a command shows the same way.
 
 ### Slash commands
 
@@ -406,7 +415,7 @@ controls, so they are **not** added to prompt history:
 | `/newtab` | — | Open a new agent tab (same as `Ctrl+T`). |
 | `/closetab` | — | Close the current agent tab, discarding its conversation (twice if it has one). |
 | `/tab N` | — | Select agent tab N (same as `Alt+N`). |
-| `/quit` | `/exit` | Stop the agent and exit the application (after a confirmation). |
+| `/quit` | `/exit` | Exit the application; while an agent runs, after a confirmation (the agent is stopped). |
 | `/approve`, `/reject`, `/suggest <text>` | — | Answer a pending approval (normally done in the approval dialog). |
 | `/ask [on\|off]` | — | Toggle (or set) whether the current tab's agent may [ask you questions](#questions-from-the-agent). |
 
@@ -421,14 +430,14 @@ controls, so they are **not** added to prompt history:
 | `Tab` | Complete a `/command`; otherwise move to the next pane. |
 | `F1` | Help. |
 | `F2` | Toggle auto-approve. |
-| `F3` | Cycle the right pane: Status → Shell → Tools. |
+| `F3` | Cycle the right pane: Status → Shell → Tools → Help. |
 | `F4` / `F5` | Copy (the selection, or the last answer) / paste. |
 | `F6` | Move the focus to the next pane (also the way out of the Shell). |
 | `F7` | Zoom the focused pane to full screen; `Escape` restores it. |
 | `F8` (twice) | Clear the conversation. |
 | `F9` | Stop the agent (a pending LLM response is cut off immediately). |
 | `Ctrl+C` | Copy the selection; otherwise stop a running agent; while idle, ask to quit (press it again to quit). |
-| `F10` / `Ctrl+Q` | Quit, after a confirmation: `y`, `Enter` or the same key again quits, `n` or `Esc` stays (every tab's session and the history are saved). |
+| `F10` / `Ctrl+Q` | Quit (every tab's session and the history are saved). While an agent runs it asks first: `y`, `Enter` or the same key again quits, `n` or `Esc` stays. |
 | `Ctrl+F` | Find in the agent log, or in the Tools pane or a diff when it has the focus: incremental and case-insensitive; `Enter`/`↑` previous match, `↓` next, `Esc` closes. A match inside folded output unfolds it. |
 | `Ctrl+T` | Open a new agent tab. |
 | `Ctrl+G` | Go to an agent tab: a list opens; `1`…`9` or `↑`/`↓` `Enter` select, `Ctrl+G` again (or `Tab`) the next tab, `N` a new tab, `X` closes the highlighted one, `Esc` cancels. Plain control keys work in every terminal, unlike Alt/Ctrl+digit, which terminals such as Tilix and GNOME Terminal keep for themselves. |

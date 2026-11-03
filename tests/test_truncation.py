@@ -37,6 +37,7 @@ Exits with a non-zero status if any test fails.
 """
 
 import argparse
+import io
 import json
 import os
 import queue
@@ -1039,6 +1040,7 @@ class TestRunner:
                 await pilot.pause(0.1)
                 r["the tab on screen is the last selected"] = tab3.agent.selected_at > tab1.agent.selected_at > 0
                 asking = lambda: type(app.screen).__name__ == "QuitScreen"
+                tab3.busy = lambda: True  # the dialog is for quitting a running agent
                 await pilot.press("f10")
                 await pilot.pause(0.1)
                 r["F10 asks first"] = app.is_running and asking()
@@ -1076,9 +1078,10 @@ class TestRunner:
                 if len(app.tabs) == 2:
                     r["reopened tab shows its conversation"] = "third-answer" in app.tabs[1].agent_log.plain_text
                     r["first tab restored too"] = "first-answer" in app.tabs[0].agent_log.plain_text
-                await pilot.press("f10", "f10")
+                app.prompt.focus()
+                await pilot.press(*"/quit", "enter")
                 await pilot.pause(0.3)
-            r["F10 twice quits"] = not app.is_running
+            r["/quit while no agent runs quits without asking"] = not app.is_running
             return r
 
         native = aic.clipboard_write_native, aic.clipboard_read_native
@@ -1925,6 +1928,34 @@ class TestRunner:
                     log.write_line(f"later {k}")
                 await pilot.pause(0.05)
                 r["unfolded by hand it stays open"] = second.folded is False
+                shown = lambda: [log._lines[i].plain for i, _, _ in log._rows]  # noqa: E731
+                # Lines written outside an open fold stay in sight, whatever it does.
+                log.begin_fold("$ make", folded=True)
+                log.write("compiling\n")
+                log.write_outside_fold(lambda: log.write_line("NOTE while it runs"))
+                log.write("linking\n")
+                log.end_fold()
+                cmd = next(line for line in reversed(log._lines) if line.plain.startswith("▸ $ make"))
+                r["a note written inside a closed fold shows"] = "NOTE while it runs" in shown() and not any(
+                    x in shown() for x in ("compiling", "linking"))
+                log.toggle_fold(cmd, animate=False)
+                r["unfolding shows the fold's lines around it"] = all(
+                    x in shown() for x in ("compiling", "NOTE while it runs", "linking"))
+                log.toggle_fold(cmd)
+                r["folding again keeps the note"] = "NOTE while it runs" in shown() and "linking" not in shown()
+                log.begin_fold("✻ thinking", linger=True)
+                log.write("deep thought")
+                log.write_outside_fold(lambda: log.write_line("NOTE mid-thought"))
+                log.write(" goes on\n")
+                log.end_fold()
+                third = next(line for line in reversed(log._lines) if "thinking" in line.plain)
+                r["the thinking goes on after the note"] = shown()[-3:] == ["deep thought", "NOTE mid-thought",
+                                                                          " goes on"]
+                for k in range(20):
+                    log.write_line(f"end {k}")
+                await pilot.pause(0.05)
+                r["rolled up out of view, the note stays"] = third.folded is True and "NOTE mid-thought" in shown() \
+                    and "deep thought" not in shown()
             return r
 
         for name, ok in asyncio.run(scenario()).items():
@@ -2270,11 +2301,14 @@ class TestRunner:
                 tab = app.tab
                 tab.agent.client = fake_openai.FakeOpenAIClient([self._done()])
                 tab.agent.task_summary_enabled = False
-                tab.agent.inject_suggestion("use tabs\nnot spaces")
+                tab.queue_suggestion("use tabs\nnot spaces")
+                r["it shows as soon as it is sent"] = "    use tabs" in tab.agent_log.plain_text and \
+                    "↳ queued: the agent reads it at its next step" in tab.agent_log.plain_text
                 tab.start("go")
                 end = time.monotonic() + 10
-                while tab.busy() and time.monotonic() < end:
+                while (tab.busy() or tab.queued_suggestions) and time.monotonic() < end:
                     await pilot.pause(0.05)
+                await pilot.pause(0.1)
                 lines = tab.agent_log._lines
                 at = next((k for k, line in enumerate(lines)
                            if line.rule and line.plain.startswith("You · suggestion · ")), -1)
@@ -2283,6 +2317,9 @@ class TestRunner:
                 r["its lines are indented under it"] = at >= 0 and [l.plain for l in lines[at + 1:at + 3]] == [
                     "    use tabs", "    not spaces"]
                 r["the raw log line is not shown"] = "[USER SUGGESTION]" not in tab.agent_log.plain_text
+                r["once read it says so, without showing it again"] = (
+                    tab.agent_log.plain_text.count("    use tabs") == 1 and not tab.queued_suggestions
+                    and "↳ the agent read your suggestion · " in tab.agent_log.plain_text)
                 tab.agent_log.clear()
                 tab.render_history()
                 lines = tab.agent_log._lines
@@ -2292,6 +2329,155 @@ class TestRunner:
 
         for name, ok in asyncio.run(scenario()).items():
             self.check(f"tui suggestion: {name}", ok)
+
+    def test_tui_markdown(self):
+        """Replies render their markdown as they stream (headings, emphasis,
+        lists, code, tables drawn once complete); --no-markdown shows them raw."""
+        if not aic._TEXTUAL_AVAILABLE:
+            self.check("tui markdown: skipped (textual missing)", True)
+            return
+        import asyncio
+        import time
+        reply = ("# Title\n\nSome **bold** and `code`, 2*3*4 and snake_case_name.\n- item\n  - nested\n"
+                 "1. first\n\n```sh\necho **raw**\n```\n| Name | Count |\n|:-----|------:|\n| alpha | 1 |\n"
+                 "| beta | 22 |")
+
+        class LogApp(aic.App):
+            def compose(self):
+                yield aic.OutputLog(id="log")
+
+        def lines(log):
+            return [line.plain for line in log._lines]
+
+        async def unit():
+            r = {}
+            async with LogApp().run_test(size=(40, 40)) as pilot:
+                log = pilot.app.query_one(aic.OutputLog)
+                writer = aic.MarkdownWriter(log)
+                writer.feed(reply[:4])
+                r["the open line renders as it streams"] = log.open_line.plain == "Ti"
+                for k in range(4, len(reply), 3):
+                    writer.feed(reply[k:k + 3])
+                writer.finish()
+                shown = lines(log)
+                title = next((line for line in log._lines if line.plain == "Title"), None)
+                r["a heading loses its #s and is bold"] = title is not None and "bold" in title.runs[0][1]
+                r["emphasis and code lose their marks, plain text stays"] = \
+                    "Some bold and code, 2*3*4 and snake_case_name." in shown
+                r["list items get bullets"] = "• item" in shown and "  ◦ nested" in shown and "1. first" in shown
+                r["code blocks stay as written"] = shown[7:10] == ["```sh", "echo **raw**", "```"]
+                r["a table ending the reply is drawn aligned"] = shown[10:16] == [
+                    "┌───────┬───────┐", "│ Name  │ Count │", "├───────┼───────┤", "│ alpha │     1 │",
+                    "│ beta  │    22 │", "└───────┴───────┘"]
+                log.clear()
+                writer = aic.MarkdownWriter(log)
+                writer.feed("| a | b |\n|---|---|\n| " + "word " * 30 + "| x |\nafter\n")
+                writer.finish()
+                drawn = [p for p in lines(log) if p.startswith(("│", "┌", "└", "├"))]
+                r["a wide table wraps its cells to fit"] = len(drawn) > 5 and all(
+                    aic.cell_len(p) <= 40 for p in drawn) and "after" in lines(log)
+            return r
+
+        def make_args(**extra):
+            return argparse.Namespace(
+                api_base="http://localhost:1/v1", model="test-model", api_key="test-key", auto_approve=False,
+                no_thinking=False, timeout=30, max_prompt_len=80000, max_output_bytes=10240, max_steps=10,
+                debug=False, compress_alg="truncate", compress_target=0.4, fast=False, reasoning_effort=None,
+                request=[], session_file="", instance_number=1, session_msg="[SESSION] off",
+                sandbox_enabled=False, sandbox_msg="[SANDBOX] off", sandbox_write_dir=os.getcwd(),
+                loop="", max_iterations=10, verify="", confirm_reads=False, **extra)
+
+        async def run(args):
+            app = aic.CommanderApp(args, aic.PromptHistory(None))
+            async with app.run_test(size=(100, 40)) as pilot:
+                await pilot.pause(0.2)
+                tab = app.tab
+                tab.agent.client = fake_openai.FakeOpenAIClient([self._done(reply + "\nTASKCOMPLETE")])
+                tab.agent.task_summary_enabled = False
+                tab.start("go")
+                end = time.monotonic() + 10
+                while tab.busy() and time.monotonic() < end:
+                    await pilot.pause(0.05)
+                await pilot.pause(0.1)
+                live = lines(tab.agent_log)
+                tab.agent_log.clear()
+                tab.render_history()
+                return live, lines(tab.agent_log)
+
+        for name, ok in asyncio.run(unit()).items():
+            self.check(f"tui markdown: {name}", ok)
+        live, restored = asyncio.run(run(make_args()))
+        self.check("tui markdown: a streamed reply is rendered",
+                   "Title" in live and "│ beta  │    22 │" in live and "# Title" not in live)
+        self.check("tui markdown: a restored reply too", "Title" in restored and "│ beta  │    22 │" in restored)
+        live, restored = asyncio.run(run(make_args(no_markdown=True)))
+        self.check("tui markdown: --no-markdown shows it raw",
+                   "# Title" in live and "| beta | 22 |" in live and "# Title" in restored)
+        self.check("tui markdown: --no-markdown is an option",
+                   aic.build_parser().parse_args(["--no-markdown"]).no_markdown)
+
+    def test_tui_rejection_suggestion(self):
+        """A suggestion typed while rejecting a command shows at once, even while
+        the turn's other commands still run, and only once."""
+        if not aic._TEXTUAL_AVAILABLE:
+            self.check("tui rejection suggestion: skipped (textual missing)", True)
+            return
+        import asyncio
+        import time
+        args = argparse.Namespace(
+            api_base="http://localhost:1/v1", model="test-model", api_key="test-key", auto_approve=False,
+            no_thinking=False, timeout=30, max_prompt_len=80000, max_output_bytes=10240, max_steps=10,
+            debug=False, compress_alg="truncate", compress_target=0.4, fast=False, reasoning_effort=None,
+            request=[], session_file="", instance_number=1, session_msg="[SESSION] off",
+            sandbox_enabled=False, sandbox_msg="[SANDBOX] off", sandbox_write_dir=os.getcwd(),
+            loop="", max_iterations=10, verify="", confirm_reads=False)
+        writes = json.dumps({"command": "rm -f aic-test-no-such-file"})  # not read-only: it asks
+        batch = [fake_openai.tool_call_chunk(0, id="c1", name="execute_bash", arguments=writes),
+                 fake_openai.tool_call_chunk(1, id="c2", name="execute_bash", arguments=writes),
+                 fake_openai.usage_chunk(1, 1)]
+
+        async def until(pilot, condition, timeout=10):
+            end = time.monotonic() + timeout
+            while not condition() and time.monotonic() < end:
+                await pilot.pause(0.05)
+            return condition()
+
+        async def scenario():
+            app = aic.CommanderApp(args, aic.PromptHistory(None))
+            r = {}
+            async with app.run_test(size=(120, 36)) as pilot:
+                await pilot.pause(0.2)
+                tab = app.tab
+                tab.agent.client = fake_openai.FakeOpenAIClient([batch, self._done()])
+                tab.agent.task_summary_enabled = False
+                log = tab.agent_log
+                shown = lambda: [log._lines[i].plain for i in sorted({i for i, _, _ in log._rows})]  # noqa: E731
+                tab.start("go")
+                await until(pilot, lambda: type(app.screen).__name__ == "ApprovalScreen")
+                await pilot.pause(0.5)  # past the dialog's key guard, and focused
+                first = app.screen
+                first.query_one("#approval-suggest").focus()
+                await pilot.pause(0.1)
+                await pilot.press(*"use tabs", "enter")
+                await until(pilot, lambda: app.screen is not first and type(app.screen).__name__ == "ApprovalScreen")
+                r["it shows while the next command waits"] = "    use tabs" in shown() and \
+                    "↳ queued: the agent reads it at its next step" in shown()
+                await pilot.pause(0.5)
+                await pilot.press("y")
+                await until(pilot, lambda: not tab.busy())
+                await pilot.pause(0.1)
+                r["once read it says so, without showing it again"] = (
+                    log.plain_text.count("    use tabs") == 1 and not tab.queued_suggestions
+                    and "↳ the agent read your suggestion · " in log.plain_text)
+                r["detail"] = repr(shown()[-8:])
+                r["the agent got it"] = any(m.get("content") == "I suggest you use tabs"
+                                            for m in tab.agent.conversation_history)
+            return r
+
+        results = asyncio.run(scenario())
+        detail = results.pop("detail", "")
+        for name, ok in results.items():
+            self.check(f"tui rejection suggestion: {name}", ok, detail)
 
     def test_tui_ask(self):
         """/ask toggles questions; a question waits and the next prompt answers it."""
@@ -2454,7 +2640,25 @@ class TestRunner:
                     saved.get(os.path.join(repo, "config.yml"), {}).get("before") == "port: 8001\ncache: 4096\n"
                     and saved.get(os.path.join(repo, "notes.md"), {}).get("before") is None)
                 await pilot.press("f3")
+                await pilot.pause(0.2)
+                from rich.console import Console
+                console = Console(width=200, record=True, file=io.StringIO())
+                for widget in tab.help.query(aic.Static):
+                    console.print(widget.content)
+                shown = console.export_text()
+                r["F3 goes on to Help: version, home page, tutorial, keys and options"] = (
+                    tab.pane == "help" and tab.help.display and not tab.console_log.display
+                    and f"AI-Commander {aic.__version__}" in shown and aic._REPO_URL in shown
+                    and "Getting started" in shown and "/closetab" in shown and "--auto-approve" in shown)
+                r["Help scrolls"] = tab.help.max_scroll_y > 0
+                opened = []
+                app.open_link = opened.append
+                await pilot.click(f"#help-pane-{tab.uid} .url")
+                r["a click on the address opens it"] = opened == [aic._REPO_URL]
+                del app.open_link
+                await pilot.press("f3")
                 await pilot.pause(0.1)
+                r["and back to Status"] = tab.pane == "status" and status.display and not tab.help.display
                 await pilot.press(*"/clear", "enter")
                 await pilot.pause(0.5)
                 r["/clear forgets them"] = (not tab.agent.changes and tab.pane == "status"
@@ -3084,6 +3288,14 @@ class TestRunner:
                 self.check("headless: --json emits JSON lines",
                            events and len(events) == len(proc.stdout.splitlines())
                            and shutdown and shutdown[0].get("status") == "complete", proc.stdout[-300:])
+                self.check("headless: SHUTDOWN carries the run's token totals",
+                           shutdown and set(shutdown[0].get("usage", {})) == {
+                               "input_tokens", "output_tokens", "cached_tokens", "billable_tokens"}, repr(shutdown)[:300])
+                kinds = {e["type"] for e in events}
+                replies = [e["text"] for e in events if e["type"] == "LLM_MESSAGE"]
+                self.check("headless: --json gives whole replies, no token stream",
+                           not kinds & {"LLM_STREAM", "THINKING_STREAM", "CONSOLE_STREAM", "TOKEN_USAGE"}
+                           and any("done" in r for r in replies), f"{sorted(kinds)} {replies}")
                 tool_requests = [r for r in requests if "tools" in r]
                 self.check("headless: prompt read from stdin and env config used",
                            tool_requests and tool_requests[0]["messages"][1]["content"] == "say hi")
@@ -3198,6 +3410,8 @@ def main():
     runner.test_tui_pause()
     runner.test_ask_user()
     runner.test_tui_suggestion_block()
+    runner.test_tui_markdown()
+    runner.test_tui_rejection_suggestion()
     runner.test_tui_ask()
     runner.test_tui_status()
     runner.test_git_changes_many_untracked()

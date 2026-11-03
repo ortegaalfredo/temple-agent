@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "2.7.1"
+__version__ = "2.8.0"
 
 import argparse
 import asyncio
@@ -713,7 +713,8 @@ class EventSink:
     """Presentation-layer I/O for AICommander.
 
     Event kinds: LOG, ERROR, USER_REQUEST, LLM_STREAM, THINKING_STREAM,
-    CONSOLE_STREAM (internal calls such as the summarizer), CMD_EXEC,
+    CONSOLE_STREAM (internal calls such as the summarizer), LLM_MESSAGE (a
+    finished reply's whole text: text, label for internal calls), CMD_EXEC,
     CMD_OUTPUT, CMD_COMPLETE, APPROVAL_REQUEST, STATUS_UPDATE, TOKEN_USAGE,
     TASK_TITLE, TODO (the task list: items), CHANGES (a file the agent changed:
     path, count), QUESTION (the model asks the user: text), SYSTEM and SHUTDOWN.
@@ -822,12 +823,18 @@ class ConsoleSink(EventSink):
 
 class JsonSink(EventSink):
     """--json: every event as one JSON object per line on stdout ({"type": KIND,
-    "ts": ..., **payload}); approval questions go to stderr, answers come from stdin."""
+    "ts": ..., **payload}); approval questions go to stderr, answers come from stdin.
+    Replies come whole (LLM_MESSAGE), without the per-token stream events and
+    the per-call TOKEN_USAGE (which feed the TUI's live gauges)."""
+
+    _SKIPPED = ("LLM_STREAM", "THINKING_STREAM", "CONSOLE_STREAM", "TOKEN_USAGE")
 
     def __init__(self):
         self._lock = threading.Lock()
 
     def emit(self, kind: str, payload: dict):
+        if kind in self._SKIPPED:
+            return
         line = json.dumps({"type": kind, "ts": round(time.time(), 3), **payload}, ensure_ascii=False, default=str)
         with self._lock:
             sys.stdout.write(line + "\n")
@@ -2494,6 +2501,8 @@ Rules:
 
         for call, parts in zip(calls, arguments):
             call["function"]["arguments"] = "".join(parts)
+        if content and not silent:
+            self.sink.emit("LLM_MESSAGE", {"text": "".join(content), **({"label": stream_label} if stream_label else {})})
 
         tool_calls = []
         for i, call in enumerate(calls):
@@ -2924,8 +2933,8 @@ Rules:
                 if not result.startswith("[VERIFY FAILED]"):
                     finish = args
                     summary = str(args.get("summary") or "").strip()
-                    if summary:
-                        self._log(summary, style="cyan")
+                    if summary:  # (markdown: the TUI renders it as it does replies)
+                        self.sink.emit("LOG", {"text": summary, "style": "cyan", "markdown": True})
             elif command:
                 result = self._run_command(tcid, name, command, args, suggestions)
             elif name == "execute_bash":
@@ -3054,6 +3063,7 @@ Rules:
 
         step = empty_turns = overflow_retries = self._todo_quiet = 0
         completed, status = False, "stopped"
+        usage_before = dict(self.usage_totals)  # SHUTDOWN reports this run's share
         try:
             while step < self.max_steps and not self.stop_event.is_set():
                 self._wait_if_paused(step)
@@ -3168,7 +3178,8 @@ Rules:
         finally:
             self.save_session("loop_terminated")
             self.sink.emit("SHUTDOWN", {"reason": "agent_loop_terminated", "steps": step, "completed": completed,
-                                        "status": status})
+                                        "status": status, "usage": {key: total - usage_before[key]
+                                                                    for key, total in self.usage_totals.items()}})
         self.sink.close()
         return status
 
@@ -3345,7 +3356,8 @@ if _TEXTUAL_AVAILABLE:
             self._cr = False  # a '\r' ended the last chunk: decided by what follows
             self._fold: _Line | None = None  # header of the fold new lines join
             self._linger = False  # the open fold stays open when it ends (until it scrolls out of view)
-            self._lingering: list[tuple[_Line, int, int]] = []  # (header, absolute line index, lines) left open
+            self._lingering: list[tuple[_Line, int, int]] = []  # (header, absolute line index, span) left open
+            self._mixed: set[_Line] = set()  # folds with lines of others among theirs (written outside them)
             self._dropped = 0  # lines trimmed so far (absolute index - _dropped = index in _lines)
             self._down_at = None  # where the left button went down (a click is not a drag)
             self._anim = None  # (timer, frame) of a fold rolling in or out
@@ -3417,14 +3429,16 @@ if _TEXTUAL_AVAILABLE:
                 return
             self.close_line()
             self._lines[-1].owner = None
-            count = 0
-            while count + 2 <= len(self._lines) and self._lines[-2 - count].owner is head:
-                count += 1
+            hi = len(self._lines) - 2
+            while hi >= 0 and self._lines[hi] is not head:
+                hi -= 1
+            if hi < 0:  # its header was trimmed away
+                return
+            count = sum(line.owner is head for line in self._lines[hi + 1:-1])
             if head.folded is not None:  # folded from the start: it only loses its mark if nothing came
                 if not count:
                     head.plain, head.folded = head.plain[2:], None
                     head.runs = [(len(head.plain), head.runs[0][1] if head.runs else "")]
-                    hi = len(self._lines) - 2
                     a, b = (bisect.bisect_left(self._rows, (k, -1, -1)) for k in (hi, hi + 1))
                     self._rows[a:b] = self._line_rows(hi)
                     self._cache.clear()
@@ -3432,11 +3446,10 @@ if _TEXTUAL_AVAILABLE:
             elif count:  # retitle the header, then roll the fold up
                 head.plain = f"▾ {head.plain} · {count} line{'s' * (count != 1)}"
                 head.runs, head.folded = [(len(head.plain), head.runs[0][1] if head.runs else "")], False
-                hi = len(self._lines) - 2 - count
                 a, b = (bisect.bisect_left(self._rows, (k, -1, -1)) for k in (hi, hi + 1))
                 self._rows[a:b] = self._line_rows(hi)
                 if linger:
-                    self._lingering.append((head, hi + self._dropped, count))
+                    self._lingering.append((head, hi + self._dropped, len(self._lines) - 2 - hi))
                     self._cache.clear()
                     self._settle(self._at_bottom())
                 else:
@@ -3452,17 +3465,18 @@ if _TEXTUAL_AVAILABLE:
                     return  # rows under a selection must not move
             top, removed, keep = int(self.scroll_y), 0, []
             for entry in self._lingering:
-                head, at, count = entry
+                head, at, span = entry
                 hi = at - self._dropped
                 if not (0 <= hi < len(self._lines) and self._lines[hi] is head and head.folded is False):
                     continue
-                pos, end = (bisect.bisect_left(self._rows, (k, -1, -1)) for k in (hi + 1, hi + 1 + count))
+                pos, end = (bisect.bisect_left(self._rows, (k, -1, -1)) for k in (hi + 1, hi + 1 + span))
                 if end > top - removed:
                     keep.append(entry)
                     continue
-                del self._rows[pos:end]
+                kept = [row for row in self._rows[pos:end] if self._lines[row[0]].owner is not head]
+                self._rows[pos:end] = kept
                 head.folded, head.plain = True, "▸" + head.plain[1:]
-                removed += end - pos
+                removed += end - pos - len(kept)
             self._lingering = keep
             if removed:
                 self._cache.clear()
@@ -3486,6 +3500,8 @@ if _TEXTUAL_AVAILABLE:
             head.folded = not head.folded
             head.plain = ("▸" if head.folded else "▾") + head.plain[1:]
             hi = next((k for k in range(len(self._lines) - 1, -1, -1) if self._lines[k] is head), -1)
+            if head in self._mixed and head is not self._fold:  # its rows are not one stretch to roll
+                return self._reflow(follow=follow)
             if not animate or hi < 0 or head is self._fold:  # (still streaming: its open line's rows move too)
                 return self._reflow(follow=False)
             pos = end = bisect.bisect_left(self._rows, (hi + 1, -1, -1))
@@ -3524,6 +3540,51 @@ if _TEXTUAL_AVAILABLE:
                 while finish and not frame():
                     pass
 
+        def write_outside_fold(self, write: collections.abc.Callable[[], None]) -> None:
+            """Run *write* so its lines stay in sight: not part of the open fold,
+            which goes on after them (the fold then hides only its own lines)."""
+            fold = self._fold
+            if fold is None:
+                return write()
+            self.close_line()
+            self._fold, self._lines[-1].owner = None, None
+            self._mixed.add(fold)
+            try:
+                write()
+            finally:
+                self.close_line()
+                self._fold, self._lines[-1].owner = fold, fold
+
+        @property
+        def open_line(self) -> _Line:
+            return self._lines[-1]
+
+        def set_open_line(self, segments: list[tuple[str, str]], clip: int = 0) -> _Line:
+            """Show *segments* [(text, style)] as the open line, in place of what it held."""
+            follow = self._at_bottom()
+            self._cr = False
+            line = self._lines[-1] = _Line(owner=self._fold)
+            for text, style in segments:
+                if text:
+                    line.append(text, style)
+            line.clip = clip
+            self._settle(follow)
+            return line
+
+        def drop_last_lines(self, lines: list[_Line]) -> bool:
+            """Remove *lines*, the latest complete ones (the open line is empty), to
+            write them over; False, and nothing removed, if they are not those."""
+            end = len(self._lines) - 1
+            start = end - len(lines)
+            if not lines or start < 0 or self._lines[-1].plain or self._lines[start:end] != lines:
+                return False
+            follow = self._at_bottom()
+            del self._rows[bisect.bisect_left(self._rows, (start, -1, -1)):]
+            del self._lines[start:end]
+            self._tail = 0
+            self._settle(follow)
+            return True
+
         def close_line(self, settle: bool = True) -> None:
             self._cr = False
             if self._lines[-1].plain:
@@ -3535,7 +3596,7 @@ if _TEXTUAL_AVAILABLE:
         def clear(self) -> None:
             self._stop_anim()
             self._lines, self._rows, self._tail, self._cr, self._fold = [_Line()], [], 0, False, None
-            self._linger, self._lingering = False, []
+            self._linger, self._lingering, self._mixed = False, [], set()
             self._cache.clear()
             self.virtual_size = Size(self._width, 0)
             self.scroll_to(y=0, animate=False, immediate=True)
@@ -3822,6 +3883,210 @@ if _TEXTUAL_AVAILABLE:
                 event.stop()
                 self.app.prompt.focus()
                 self.app.prompt.paste_text(event.character)
+
+    # Markdown in the agent's replies (off with --no-markdown) -------------------
+
+    _C_CODE, _C_BOLD = "#ffd7af", "bold #ffffff"
+    _MD_HEADS = ("bold underline #ffffff", "bold #ffffff", "bold #d7d7ff")  # #, ##, ### and deeper
+    _MD_BULLETS = "•◦▪"
+    _MD_INLINE_RE = re.compile(
+        r"(?P<tick>`+)(?P<code>.+?)(?P=tick)(?!`)"
+        r"|\*\*(?=\S)(?P<bold>.+?)(?<=\S)\*\*"
+        r"|(?<!\w)__(?=\S)(?P<bold_>.+?)(?<=\S)__(?!\w)"
+        r"|(?<![\w*])\*(?=[^\s*])(?P<em>.+?)(?<=[^\s*])\*(?![\w*])"
+        r"|(?<!\w)_(?=[^\s_])(?P<em_>.+?)(?<=[^\s_])_(?!\w)"
+        r"|~~(?=\S)(?P<strike>.+?)(?<=\S)~~"
+        r"|\[(?P<label>[^\]]+)\]\((?P<url>[^)\s]+)\)"
+        r"|\\(?P<esc>[!-/:-@\[-`{-~])")
+    _MD_HEAD_RE = re.compile(r" {0,3}(#{1,6})\s+(.*?)(?:\s+#+)?\s*$")
+    _MD_ITEM_RE = re.compile(r"(\s*)([-*+]|\d{1,9}[.)])\s+(?:\[([ xX])\]\s+)?(.*)")
+    _MD_QUOTE_RE = re.compile(r"\s*>\s?(.*)")
+    _MD_HR_RE = re.compile(r" {0,3}([-*_])(?:\s*\1){2,}\s*$")
+    _MD_FENCE_RE = re.compile(r"\s*(`{3,}|~{3,})")
+    _MD_DELIMITER_RE = re.compile(r":?-+:?")
+
+    def _md_inline(text: str, style: str) -> list[tuple[str, str]]:
+        """One line's emphasis, code spans, links and escapes as (text, style) segments."""
+        out, pos = [], 0
+        for m in _MD_INLINE_RE.finditer(text):
+            out.append((text[pos:m.start()], style))
+            kind, inner = m.lastgroup, m.group(m.lastgroup)
+            if kind == "code":
+                out.append((inner, f"{style} {_C_CODE}"))
+            elif kind == "url":
+                out += _md_inline(m.group("label"), f"{style} underline")
+                if inner != m.group("label"):
+                    out.append((f" ({inner})", _C_DIM))
+            elif kind == "esc":
+                out.append((inner, style))
+            else:
+                extra = {"bold": _C_BOLD, "bold_": _C_BOLD, "em": "italic", "em_": "italic"}.get(kind, "strike")
+                out += _md_inline(inner, f"{style} {extra}")
+            pos = m.end()
+        out.append((text[pos:], style))
+        return [part for part in out if part[0]]
+
+    def _md_line(text: str, style: str) -> list[tuple[str, str]]:
+        """A line of markdown outside code blocks and tables: headings lose their
+        #s, list items get bullets, quotes a bar."""
+        head = _MD_HEAD_RE.match(text)
+        if head:
+            return _md_inline(head.group(2), _MD_HEADS[min(len(head.group(1)), 3) - 1])
+        item = _MD_ITEM_RE.match(text) if not _MD_HR_RE.match(text) else None
+        if item:
+            indent, mark, task, rest = item.groups()
+            mark = (_MD_BULLETS[len(indent.expandtabs(4)) // 2 % 3] if mark in "-*+" else mark)
+            if task is not None:
+                mark = "☑" if task in "xX" else "☐"
+            return [(f"{indent}{mark} ", "bold #ffd75f"), *_md_inline(rest, style)]
+        quote = _MD_QUOTE_RE.match(text)
+        if quote:
+            return [("▌ ", _C_DIM), *_md_inline(quote.group(1), f"{style} italic")]
+        return _md_inline(text, style)
+
+    def _md_cells(row: str) -> list[str]:
+        """The cells of a table row; a | in a code span or escaped stays in its cell."""
+        row = row.strip()
+        row = row[1:] if row.startswith("|") else row
+        row = row[:-1] if row.endswith("|") and not row.endswith("\\|") else row
+        cells, start, code, i = [], 0, False, 0
+        while i < len(row):
+            if row[i] == "\\":
+                i += 1
+            elif row[i] == "`":
+                code = not code
+            elif row[i] == "|" and not code:
+                cells.append(row[start:i])
+                start = i + 1
+            i += 1
+        return [cell.replace("\\|", "|").strip() for cell in [*cells, row[start:]]]
+
+    def _md_slice(segments: list[tuple[str, str]], a: int, b: int) -> list[tuple[str, str]]:
+        out, pos = [], 0
+        for text, style in segments:
+            if pos + len(text) > a and pos < b:
+                out.append((text[max(a, pos) - pos:min(b, pos + len(text)) - pos], style))
+            pos += len(text)
+        return out
+
+    def _md_table(rows: list[str], width: int, style: str) -> list[list[tuple[str, str]]]:
+        """A table (header, delimiter row, body rows) drawn with box lines in at
+        most *width* cells: the widest columns wrap their text to fit."""
+        aligns = ["center" if c[:1] == c[-1:] == ":" else "right" if c.endswith(":") else "left"
+                  for c in _md_cells(rows[1])]
+        n = len(aligns)
+        grid = [[_md_inline(cell, _C_BOLD if k == 0 else style) for cell in (_md_cells(row) + [""] * n)[:n]]
+                for k, row in enumerate([rows[0], *rows[2:]])]
+        texts = [["".join(t for t, _ in cell) for cell in row] for row in grid]
+        widths = [max(1, *(cell_len(row[c]) for row in texts)) for c in range(n)]
+        while sum(widths) > width - 3 * n - 1 and max(widths) > 4:
+            widths[widths.index(max(widths))] -= 1
+        spans = [[_wrap_spans(text, w) for text, w in zip(row, widths)] for row in texts]
+        ruled = any(len(s) > 1 for row in spans[1:] for s in row)  # wrapped rows need lines between them
+
+        def border(left: str, mid: str, right: str) -> list[tuple[str, str]]:
+            return [(left + mid.join("─" * (w + 2) for w in widths) + right, _C_DIM)]
+        out = [border("┌", "┬", "┐")]
+        for k, (cells, text_row, span_row) in enumerate(zip(grid, texts, spans)):
+            if k == 1 or (k and ruled):
+                out.append(border("├", "┼", "┤"))
+            for r in range(max(map(len, span_row))):
+                line = [("│", _C_DIM)]
+                for cell, text, span, w, align in zip(cells, text_row, span_row, widths, aligns):
+                    a, b = span[r] if r < len(span) else (0, 0)
+                    b = a + len(text[a:b].rstrip())
+                    pad = w - cell_len(text[a:b])
+                    left = pad // 2 if align == "center" else pad if align == "right" else 0
+                    line += [(" " * (left + 1), ""), *_md_slice(cell, a, b), (" " * (pad - left + 1), ""),
+                             ("│", _C_DIM)]
+                out.append(line)
+        out.append(border("└", "┴", "┘"))
+        return out
+
+    class MarkdownWriter:
+        """Streams an agent reply into an OutputLog with its markdown rendered:
+        the open line is restyled as it grows (headings, emphasis, code, lists,
+        quotes), --- becomes a rule, and a table, shown as it comes in, is drawn
+        again with aligned columns once its last row is in. Text without markdown
+        shows as it would unrendered."""
+
+        def __init__(self, log: OutputLog, style: str = _C_ANSWER):
+            log.close_line()
+            self.log, self.style = log, style
+            self.raw = ""  # the open line's text so far
+            self.shown: _Line | None = None  # the log line showing it
+            self.fence = ""  # the ``` (or ~~~) of the code block being written
+            self.head: tuple[str, _Line] | None = None  # the last line, while it may head a table
+            self.table: list[str] = []  # the rows of the table coming in (header, delimiter row, body)
+            self.table_lines: list[_Line] = []  # the log lines showing them as they came
+
+        def feed(self, text: str) -> None:
+            if self.shown is not None and self.log.open_line is not self.shown:  # something else ended the line
+                self.raw, self.head = "", None
+            *ended, rest = text.replace("\r\n", "\n").split("\n")
+            for part in ended:
+                self.raw += part
+                self._end_line()
+            self.raw += rest
+            if rest and len(self.raw) > 4000 and self.shown is not None:  # (a long line renders when it ends)
+                self.log.write(rest, self.style)
+            elif rest:
+                raw = self._clean(self.raw)
+                self.shown = self.log.set_open_line([(raw, _C_CODE)] if self.fence else _md_line(raw, self.style))
+
+        def finish(self) -> None:
+            self.feed("")
+            if self.raw:
+                self._end_line()
+            if self.table:
+                self._draw_table()
+
+        @staticmethod
+        def _clean(text: str) -> str:
+            return _CTRL_RE.sub("", text.replace("\r", "").expandtabs(4))
+
+        def _emit(self, segments: list[tuple[str, str]], clip: int = 0) -> _Line:
+            line = self.log.set_open_line(segments, clip)
+            self.log.write("\n")
+            return line
+
+        def _end_line(self) -> None:
+            raw, self.raw, self.shown = self._clean(self.raw), "", None
+            bare = raw.strip()
+            if self.fence:
+                if bare.startswith(self.fence) and not bare.strip(self.fence[0]):
+                    self.fence = ""
+                self._emit([(raw, _C_CODE if self.fence else _C_DIM)])
+                return
+            if self.table:
+                if "|" in raw and bare:
+                    self.table.append(raw)
+                    self.table_lines.append(self._emit(_md_line(raw, self.style)))
+                    return
+                self._draw_table()
+            elif self.head and "|" in raw and all(_MD_DELIMITER_RE.fullmatch(c) for c in _md_cells(raw)) \
+                    and len(_md_cells(raw)) == len(_md_cells(self.head[0])):
+                self.table, self.table_lines = [self.head[0], raw], [self.head[1], self._emit([(raw, _C_DIM)])]
+                self.head = None
+                return
+            self.head = None
+            fence = _MD_FENCE_RE.match(raw)
+            if fence:
+                self.fence = fence.group(1)
+                self._emit([(raw, _C_DIM)])
+            elif _MD_HR_RE.match(raw):
+                self.log.set_open_line([])
+                self.log.write_rule("", _C_DIM)
+            else:
+                line = self._emit(_md_line(raw, self.style))
+                self.head = (raw, line) if "|" in raw else None
+
+        def _draw_table(self) -> None:
+            rows, lines, self.table, self.table_lines = self.table, self.table_lines, [], []
+            self.log.set_open_line([])
+            if self.log.drop_last_lines(lines):  # (else something was written after it: it stays as it came)
+                for segments in _md_table(rows, self.log.scrollable_content_region.width or 80, self.style):
+                    self._emit(segments, clip=1)
 
     class FindBar(Input):
         """Ctrl+F: incremental search of the agent log or the console."""
@@ -4406,7 +4671,7 @@ if _TEXTUAL_AVAILABLE:
                     callback()
                     return
 
-    _PANES = ("status", "shell", "tools")  # the right panel's tabs, in F3 order
+    _PANES = ("status", "shell", "tools", "help")  # the right panel's tabs, in F3 order
     _CMD_ROWS = 3  # rows a tool call takes at most in the agent log (a click shows the rest)
     _CMD_FOLD_LINES = 200  # output lines a tool call's fold in the agent log keeps (the Tools pane has all)
     _RESULT_RE = re.compile(r"Command executed with exit code (-?\d+)\.\nOutput:\n?(.*)\Z", re.S)
@@ -4863,7 +5128,7 @@ if _TEXTUAL_AVAILABLE:
             return text
 
     class PaneTabs(_ClickBar):
-        """The Status / Shell / Tools tab strip of the right panel (of the current
+        """The Status / Shell / Tools / Help tab strip of the right panel (of the current
         agent tab); a hidden tab with news is marked."""
 
         def build(self, width: int) -> Text:
@@ -5212,7 +5477,7 @@ if _TEXTUAL_AVAILABLE:
                  "the × of the current tab or /closetab closes it (twice if it has a "
                  "conversation, which is discarded) · ◆ waits for approval, ● finished while away · saved tabs "
                  "reopen on the next start"),
-        ("Panes", "F3 cycles the right panel: Status → Shell → Tools (a tab with news is marked) · F6 or Tab "
+        ("Panes", "F3 cycles the right panel: Status → Shell → Tools → Help (a tab with news is marked) · F6 or Tab "
                   "moves to the next pane · F7 zooms the focused pane (Esc restores) · in the Shell every key "
                   "goes to the shell: leave it with F6 or the mouse"),
         ("Status", "Changes: the files the agent changed (with its file tools, or with commands, found with git "
@@ -5220,8 +5485,8 @@ if _TEXTUAL_AVAILABLE:
                    "its diff under it (a second click or Esc rolls it up) · Jobs: the running command and the "
                    "background jobs, with their latest output (stop ends a job) · Context: what the prompt holds, "
                    "and the last reply; a click lists every message · a click on a section title folds it"),
-        ("Quit", "F10 · Ctrl+Q · /quit · Ctrl+C while idle: asks first (y, Enter or the same key again quits; "
-                 "n or Esc stays)"),
+        ("Quit", "F10 · Ctrl+Q · /quit: quits at once while no agent runs, otherwise asks first (y, Enter or the "
+                 "same key again quits; n or Esc stays) · Ctrl+C while idle always asks"),
         ("Questions", "/ask (or --ask) lets the agent ask you questions; a question waits for your answer: type "
                       "it in the prompt and press Enter (an empty answer or /ask off lets it decide by itself) · "
                       "off by default, so runs can go unattended"),
@@ -5251,6 +5516,60 @@ if _TEXTUAL_AVAILABLE:
                 yield Static(table)
                 yield Static(Text("\nEsc closes this help.", style=_C_DIM))
 
+    _REPO_URL = "https://github.com/ortegaalfredo/AICommander"
+    _TUTORIAL = (
+        "Type a task in the prompt and press Enter: the agent plans it, runs commands and edits files "
+        "until it is done, and says so.",
+        "Each command asks first: y runs it, n rejects it, or type a suggestion to steer the agent "
+        "instead. F2 (or /aa) turns auto-approve on; read-only commands never ask.",
+        "While the agent works, type in the prompt to steer it: your message reaches it at its next "
+        "step. F9 (or Ctrl+C) stops it; the next task goes on from the same conversation.",
+        "The right panel: Status lists the files the agent changed (a click shows the diff), its jobs and "
+        "what the context holds · Shell is a terminal of your own · Tools has every command's full "
+        "output · Help is this page. F3 cycles them.",
+        "The conversation is saved in this directory and comes back on the next start; /clear (or F8 "
+        "twice) starts over. Ctrl+T opens another agent in a tab of its own.",
+        "Unattended: aic --nogui \"task\" runs it on the terminal (--json for JSON events), and --loop "
+        "PROMPT.md repeats a prompt file until the model is done (a ralph loop).",
+    )
+
+    class HelpPane(VerticalScroll):
+        """The right panel's Help tab: version, home page, a short tutorial,
+        the keys and commands, and the command-line options."""
+
+        def compose(self) -> ComposeResult:
+            head = _C_ANSWER
+            yield Static(Text("AI-Commander ", style="bold #ffff5f").append(__version__, "bold #ffffff"))
+            yield Static(Text(_REPO_URL, "underline #87d7ff").append("  (a click opens it)", _C_DIM), classes="url")
+            yield Static("")
+            steps = Table.grid(padding=(0, 1))
+            steps.add_column(style="bold #ffd75f", no_wrap=True)
+            steps.add_column(style="#e5e5e5")
+            for number, step in enumerate(_TUTORIAL, 1):
+                steps.add_row(f"{number}.", step)
+            yield Static(Text("Getting started", style=f"bold {head}"))
+            yield Static(steps)
+            for heading, rows in (("Keys, mouse and commands", _HELP), ("Command-line options", self._options())):
+                table = Table.grid(padding=(0, 2))
+                table.add_column(style="bold #87d7ff", no_wrap=True)
+                table.add_column(style="#e5e5e5")
+                for name, text in rows:
+                    table.add_row(name, text)
+                yield Static(Text(f"\n{heading}", style=f"bold {head}"))
+                yield Static(table)
+
+        def on_click(self, event: events.Click) -> None:
+            if event.widget is not None and event.widget.has_class("url"):
+                self.app.open_link(_REPO_URL)
+
+        on_paste, on_key = OutputLog.on_paste, OutputLog.on_key  # typing here goes to the prompt
+
+        @staticmethod
+        def _options() -> list[tuple[str, str]]:
+            return [(", ".join(action.option_strings), action.help or "")
+                    for action in build_parser()._actions
+                    if action.option_strings and action.help != argparse.SUPPRESS]
+
     class AgentTab:
         """One agent of the TUI: its AICommander (own session file, lock, queue
         and thread), its panes (agent log, console, shell) and run state. Its
@@ -5273,6 +5592,7 @@ if _TEXTUAL_AVAILABLE:
             self.console_log = OutputLog(id=f"console-log-{self.uid}", max_lines=5000)
             self.shell = ShellWidget(id=f"shell-widget-{self.uid}")
             self.status = StatusPane(self, id=f"status-pane-{self.uid}")
+            self.help = HelpPane(id=f"help-pane-{self.uid}")
             for widget in self.widgets:
                 widget.display = False
             self.pane = "status"  # what the right panel shows for this tab: one of _PANES
@@ -5289,10 +5609,12 @@ if _TEXTUAL_AVAILABLE:
             self._run_started = self._cmd_started = time.monotonic()
             self.pending_approval: str | None = None  # a command waiting for the user's verdict
             self.pending_question: str | None = None  # an ask_user question waiting for the user's answer
+            self.queued_suggestions: list[str] = []  # shown when typed, not read by the agent yet
             self.draft = ""  # the prompt text while another tab is on screen
             self.unseen = False  # a run ended while another tab was on screen
             self.closing = False
             self._agent_stream: str | None = None  # "think" / "text" while the agent pane streams
+            self._md: MarkdownWriter | None = None  # renders the reply streaming in (unless --no-markdown)
             self._console_stream = False
             self._cmd_fold, self._cmd_lines = False, 0  # a tool call's fold open in the agent log, its output lines
             self._marker_hold = ""
@@ -5300,11 +5622,11 @@ if _TEXTUAL_AVAILABLE:
 
         @property
         def widgets(self) -> tuple:
-            return self.agent_log, self.console_log, self.shell, self.status
+            return self.agent_log, self.console_log, self.shell, self.status, self.help
 
         @property
         def right_pane(self) -> Widget:
-            return {"status": self.status, "shell": self.shell}.get(self.pane, self.console_log)
+            return {"status": self.status, "shell": self.shell, "help": self.help}.get(self.pane, self.console_log)
 
         def unseen_changes(self) -> int:
             return max(0, len(self.agent.changes) - self.changes_seen)
@@ -5393,7 +5715,7 @@ if _TEXTUAL_AVAILABLE:
                     text = text.replace(AICommander.COMPLETION_MARKER, "").rstrip()
                     for line in (text, AICommander.finish_summary(msg)):
                         if line:
-                            log.write_line(line, _C_ANSWER)
+                            self.write_answer(line)
                     for tc in msg.get("tool_calls") or []:
                         name, result = (tc.get("function") or {}).get("name"), results.get(tc.get("id"))
                         if name == "todo":  # the folded list, as when it ran
@@ -5516,6 +5838,9 @@ if _TEXTUAL_AVAILABLE:
             with contextlib.suppress(queue.Empty):
                 while True:
                     unread.append(self.agent.suggestion_queue.get_nowait())
+            for text in unread:  # (read ones are still to be marked: their events may come after this)
+                with contextlib.suppress(ValueError):
+                    self.queued_suggestions.remove(text)
             if unread and not self.closing and not self._idle_callbacks:  # a clear or close discards them
                 text = "\n".join(unread)
                 self.agent_log.write_line("↳ the agent finished before reading your message; "
@@ -5592,8 +5917,8 @@ if _TEXTUAL_AVAILABLE:
                     self._stream_chunks = 0
             elif kind == "TASK_TITLE":
                 self.set_title(p.get("summary", ""))
-            elif kind == "SYSTEM":
-                pass  # the startup lines already show this
+            elif kind in ("SYSTEM", "LLM_MESSAGE"):
+                pass  # the startup lines / the stream already showed this
             else:
                 self._end_streams()
                 if kind != "APPROVAL_REQUEST":  # (what follows a tool call is not hidden in its fold)
@@ -5603,8 +5928,13 @@ if _TEXTUAL_AVAILABLE:
         def _dispatch_line(self, kind: str, p: dict, text: str) -> None:
             log, console = self.agent_log, self.console_log
             if kind == "LOG":
-                if p.get("suggestion"):
+                if p.get("suggestion") in self.queued_suggestions:  # shown when it was typed
+                    self.queued_suggestions.remove(p["suggestion"])
+                    log.write_line(f"↳ the agent read your suggestion · {_clock()}", _C_DIM)
+                elif p.get("suggestion"):
                     self.write_suggestion(p["suggestion"], _clock())
+                elif p.get("markdown"):
+                    self.write_answer(text)
                 else:
                     log.write_line(text, _LOG_STYLES.get(p.get("style", ""), "#c8d0e0"))
             elif kind == "ERROR":
@@ -5652,12 +5982,29 @@ if _TEXTUAL_AVAILABLE:
                 self.unseen = self is not self.app.tab
 
         def write_suggestion(self, text: str, when: str = "") -> None:
-            """A suggestion the agent read mid-run: a rule over the text, indented,
-            so it stands out from the agent's output when scrolling back."""
+            """A suggestion for the agent: a rule over the text, indented, so it
+            stands out from the agent's output when scrolling back."""
             log = self.agent_log
             log.write_rule(" · ".join(filter(None, ("You · suggestion", when))), _C_SUGGEST)
             for line in text.splitlines() or [""]:
                 log.write_line(f"    {line}", _C_USER)
+
+        def queue_suggestion(self, text: str) -> None:
+            """Steer the running agent with *text*: shown at once, in sight even
+            while a command's or thinking's fold is open."""
+            text = text.strip()
+            self.agent.inject_suggestion(text)
+            self.show_queued_suggestion(text)
+
+        def show_queued_suggestion(self, text: str) -> None:
+            """*text* reaches the agent later: shown now, in sight even inside an
+            open fold; when the agent reads it the log only notes that."""
+            self.queued_suggestions.append(text)
+
+            def show() -> None:
+                self.write_suggestion(text, _clock())
+                self.agent_log.write_line("↳ queued: the agent reads it at its next step", _C_DIM)
+            self.agent_log.write_outside_fold(show)
 
         def _begin_command(self, label: str) -> None:
             """A tool call in the agent log: a fold, closed from the start, that its
@@ -5686,17 +6033,38 @@ if _TEXTUAL_AVAILABLE:
         def _agent_write(self, text: str, kind: str) -> None:
             log = self.agent_log
             if kind != self._agent_stream:
-                self._flush_marker()
+                self._flush_answer()
                 self._end_command()
                 log.end_fold()
                 log.close_line()
                 if kind == "think":
                     log.begin_fold("✻ thinking", _C_DIM, linger=True)
                 self._agent_stream = kind
+                self._md = MarkdownWriter(log) if kind == "text" and self.markdown else None
                 self.set_phase("thinking" if kind == "think" else "writing")
-            if kind == "text":
-                text = self._filter_marker(text)
-            log.write(text, _C_THINK if kind == "think" else _C_ANSWER)
+            if kind == "think":
+                log.write(text, _C_THINK)
+            else:
+                self._write_answer_part(self._filter_marker(text))
+
+        @property
+        def markdown(self) -> bool:
+            return not getattr(self.args, "no_markdown", False)
+
+        def _write_answer_part(self, text: str) -> None:
+            if self._md is not None:
+                self._md.feed(text)
+            else:
+                self.agent_log.write(text, _C_ANSWER)
+
+        def write_answer(self, text: str) -> None:
+            """A whole reply (or task summary) in the agent log, its markdown rendered."""
+            if self.markdown:
+                writer = MarkdownWriter(self.agent_log)
+                writer.feed(text)
+                writer.finish()
+            else:
+                self.agent_log.write_line(text, _C_ANSWER)
 
         def _filter_marker(self, text: str) -> str:
             """Hide the completion marker, even when it arrives split across chunks."""
@@ -5706,14 +6074,17 @@ if _TEXTUAL_AVAILABLE:
             self._marker_hold = buf[len(buf) - hold:] if hold else ""
             return buf[:len(buf) - hold] if hold else buf
 
-        def _flush_marker(self) -> None:
+        def _flush_answer(self) -> None:
             if self._marker_hold:
-                self.agent_log.write(self._marker_hold, _C_ANSWER)
+                self._write_answer_part(self._marker_hold)
                 self._marker_hold = ""
+            if self._md is not None:
+                self._md.finish()
+                self._md = None
 
         def _end_streams(self) -> None:
             if self._agent_stream:
-                self._flush_marker()
+                self._flush_answer()
                 self.agent_log.end_fold()
                 self.agent_log.close_line()
                 self._agent_stream = None
@@ -5750,6 +6121,9 @@ if _TEXTUAL_AVAILABLE:
         #status-bar { height: 1; background: #06989a; color: #000000; }
         #fkeys { height: 1; background: #000000; }
         StatusPane { border: solid #6f8fc0; height: 1fr; background: #12488b; }
+        HelpPane { border: solid #6f8fc0; height: 1fr; background: #12488b; padding: 0 1; }
+        HelpPane:focus { border: double #87d7ff; }
+        HelpPane .url:hover { background: #0b2f5e; }
         StatusPane:focus-within { border: double #87d7ff; }
         StatusPane .head { height: 1; background: #0b2f5e; }
         StatusPane .changes { height: 1fr; }
@@ -5762,7 +6136,7 @@ if _TEXTUAL_AVAILABLE:
         BINDINGS = [
             Binding("f1", "help", "Help", priority=True),
             Binding("f2", "toggle_auto", "Auto-approve", priority=True),
-            Binding("f3", "toggle_pane", "Status/Shell/Tools", priority=True),
+            Binding("f3", "toggle_pane", "Status/Shell/Tools/Help", priority=True),
             Binding("f4", "copy", "Copy", priority=True),
             Binding("f5", "paste", "Paste", priority=True),
             Binding("f6", "cycle_focus", "Next pane", priority=True),
@@ -5889,7 +6263,7 @@ if _TEXTUAL_AVAILABLE:
             tab = AgentTab(self, session_file, instance_number, session_msg)
             self.tabs.append(tab)
             await self.query_one("#agent-stack").mount(tab.agent_log)
-            await self.query_one("#switcher").mount(tab.status, tab.console_log, tab.shell)
+            await self.query_one("#switcher").mount(tab.status, tab.console_log, tab.shell, tab.help)
             tab.start_up()
             if select:
                 self.select_tab(tab)
@@ -6042,9 +6416,12 @@ if _TEXTUAL_AVAILABLE:
                     self._set_auto_approve(True, tab)
                 approved = verdict in ("yes", "always")
                 tab.sink.resolve_approval(approved, suggestion)
-                tab.agent_log.write_line(
-                    "  ✓ approved" if approved else "  ✗ rejected, with your suggestion" if suggestion
-                    else "  ✗ rejected", _C_OK if approved else "#ffd75f")
+                if approved or suggestion.lower() in ("y", "yes"):  # (the agent takes those as answers)
+                    tab.agent_log.write_line("  ✓ approved", _C_OK)
+                elif suggestion and suggestion.lower() not in ("n", "no"):
+                    tab.show_queued_suggestion(suggestion)  # the agent reads it after the turn's other calls
+                else:
+                    tab.agent_log.write_outside_fold(lambda: tab.agent_log.write_line("  ✗ rejected", "#ffd75f"))
                 tab.set_phase("running" if approved else "thinking")
             screen = self._approval_screen = ApprovalScreen(tab.pending_approval)
             self.push_screen(screen, done)
@@ -6144,8 +6521,7 @@ if _TEXTUAL_AVAILABLE:
                 self.tab.answer_question(text)
                 return
             if self.tab.busy():
-                self.agent.inject_suggestion(text)
-                self.agent_log.write_line("↳ suggestion queued: the agent reads it at its next step", "#ffd75f")
+                self.tab.queue_suggestion(text)
                 return
             self.tab.start(text)
 
@@ -6204,7 +6580,7 @@ if _TEXTUAL_AVAILABLE:
             tab = self.tab
 
             def clear():
-                tab.agent.suggestion_queue = queue.Queue()
+                tab.agent.suggestion_queue, tab.queued_suggestions = queue.Queue(), []
                 tab.agent.discard_session("cleared")
                 tab.agent_log.clear()
                 tab.console_log.clear()
@@ -6339,13 +6715,14 @@ if _TEXTUAL_AVAILABLE:
 
         def show_pane(self, pane: str, focus: bool = True) -> None:
             tab = self.tab
+            hidden = self.focused is not None and tab.right_pane in self.focused.ancestors_with_self
             tab.right_pane.display = False
             tab.pane = tab.agent.pane = pane
             tab.right_pane.display = True
             self._seen_pane(tab)
             if focus and pane == "shell":
                 self.call_after_refresh(tab.shell.focus)
-            elif isinstance(self.focused, ShellWidget):
+            elif hidden or isinstance(self.focused, ShellWidget):  # the focus was in the pane now hidden
                 self.prompt.focus()
 
         def action_show_pane(self, pane: str) -> None:
@@ -6467,17 +6844,18 @@ if _TEXTUAL_AVAILABLE:
                 self.notify("The agent is not running.", timeout=2)
 
         def action_interrupt(self) -> None:
-            self.action_stop() if self.tab.busy() else self.action_quit()
+            self.action_stop() if self.tab.busy() else self.action_quit(ask_idle=True)
 
-        def action_quit(self) -> None:
-            """Ask first; the quit key again while asking quits."""
+        def action_quit(self, ask_idle: bool = False) -> None:
+            """Quit; ask first when that stops a running agent (or for a Ctrl+C,
+            easily pressed once too often). The quit key again while asking quits."""
             if self._shutting_down:
                 return
-            if isinstance(self.screen, QuitScreen):
+            running = sum(tab.busy() for tab in self.tabs)
+            if isinstance(self.screen, QuitScreen) or not (running or ask_idle):
                 self.shutdown()
             else:
-                self.push_screen(QuitScreen(sum(tab.busy() for tab in self.tabs)),
-                                 lambda yes: self.shutdown() if yes else None)
+                self.push_screen(QuitScreen(running), lambda yes: self.shutdown() if yes else None)
 
         def shutdown(self) -> None:
             """Stop every agent, save the sessions and the history, exit."""
@@ -6598,9 +6976,8 @@ def _on_signals(handler) -> None:
                 signal.signal(sig, handler)
 
 
-def main():
-    _enable_windows_console_vt()
-    _check_openai_version()
+def build_parser() -> argparse.ArgumentParser:
+    """The command line (also listed on the TUI's Help tab)."""
     parser = argparse.ArgumentParser(
         description="AI-Commander - a ralph-loop AI agent",
         epilog="--nogui exit status: 0 task complete, 1 error, 2 step/iteration limit reached, 130 stopped.")
@@ -6635,6 +7012,9 @@ def main():
                         help="Plain CLI mode without the TUI (no session file unless --session is given)")
     parser.add_argument("--no-mouse", action="store_true",
                         help="TUI without mouse support, leaving selection and paste to the terminal")
+    parser.add_argument("--no-markdown", action="store_true",
+                        help="TUI: show the agent's replies as they come, without rendering their markdown "
+                             "(headings, emphasis, lists, code blocks, tables)")
     parser.add_argument("--disable-sandbox", action="store_true",
                         help="Disable the OS-level Landlock sandbox (Linux only)")
     parser.add_argument("--compress-alg", default="context-compressor-llm",
@@ -6663,6 +7043,13 @@ def main():
     parser.add_argument("--json", action="store_true",
                         help="Emit every event as a JSON line on stdout (implies --nogui)")
     parser.add_argument("request", nargs="*", help="Task request (--nogui reads it from stdin when piped)")
+    return parser
+
+
+def main():
+    _enable_windows_console_vt()
+    _check_openai_version()
+    parser = build_parser()
     args = parser.parse_args()
     # Keep the key out of the environment the agent's commands inherit (and the model could print).
     env_key = os.environ.pop("AIC_API_KEY", None)

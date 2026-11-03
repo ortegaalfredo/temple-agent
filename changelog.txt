@@ -1,6 +1,29 @@
 AI-Commander changelog
 ======================
 
+2.8.0
+-----
+
+- Markdown in the agent's replies is rendered in the agent pane as it
+  streams: headings lose their #s and show bold, **bold**, *italics*,
+  `code`, bullets, task boxes, quotes and rules are styled, code blocks keep
+  their text, and a table is redrawn with aligned columns (wrapped to fit
+  the pane) once its last row is in. Text without markdown shows as before.
+  Restored sessions and task summaries render the same way. --no-markdown
+  shows replies raw.
+- A Help tab in the right pane (F3 cycles Status → Shell → Tools → Help):
+  version and home page, a short tutorial, the keys and commands, and the
+  command-line options.
+- A message typed while the agent works shows at once, even while a command
+  runs or the model thinks, and "↳ the agent read your suggestion" follows
+  when the agent gets it. A suggestion typed when rejecting a command shows
+  the same way; "y" or "yes" typed there counts as approving.
+- F10, Ctrl+Q and /quit quit at once when no agent runs; they ask first only
+  while one does. Ctrl+C while idle still asks.
+- --json: replies come as one LLM_MESSAGE event with the whole text instead
+  of token by token, without the per-call TOKEN_USAGE events; the final
+  SHUTDOWN event carries the run's token totals (usage).
+
 2.7.1
 -----
 
