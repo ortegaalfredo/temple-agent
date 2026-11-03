@@ -1875,6 +1875,43 @@ class TestRunner:
         self.check("tui log: copy re-joins soft-wrapped rows",
                    text == "streamed text that is long enough to wrap across rows\nsecond line\nthird", repr(text))
 
+    def test_fast_startup(self):
+        """The openai SDK (about a second to import) is imported on demand, and a
+        restored conversation is written in bulk, laid out as line by line."""
+        import subprocess
+        out = subprocess.run([sys.executable, "-c", "import aic, sys; print('openai' in sys.modules)"],
+                             cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                             capture_output=True, text=True, timeout=60).stdout.strip()
+        self.check("startup: importing aic does not import openai", out == "False", out)
+        if not aic._TEXTUAL_AVAILABLE:
+            return
+        import asyncio
+        import contextlib
+
+        class LogApp(aic.App):
+            def compose(self):
+                yield aic.OutputLog(id="log")
+
+        def fill(log):
+            for k in range(30):
+                log.write_line(f"line {k} " + "word " * k)
+                log.begin_fold(f"$ cmd {k}", rule=k % 2 == 0, folded=k % 3 == 0)
+                log.write("output\n" * (k % 4))
+                log.end_fold()
+
+        async def scenario():
+            async with LogApp().run_test(size=(40, 10)) as pilot:
+                log = pilot.app.query_one(aic.OutputLog)
+                with log.bulk():
+                    fill(log)
+                bulk = [(line.plain, line.folded) for line in log._lines], list(log._rows), log.max_scroll_y
+                log.clear()
+                log.bulk = contextlib.nullcontext
+                fill(log)
+                await pilot.pause(0.5)  # (the folds' roll-up frames)
+                return bulk == ([(line.plain, line.folded) for line in log._lines], list(log._rows), log.max_scroll_y)
+        self.check("startup: a bulk write lays out the log as line by line", asyncio.run(scenario()))
+
     def test_tui_lingering_fold(self):
         """Thinking stays open when it ends and folds, unseen, once it has all
         scrolled above the view; a fold read by hand stays as the user left it."""
@@ -3401,6 +3438,7 @@ def main():
     runner.test_transient_error_is_retried()
     runner.test_prompt_history_file()
     runner.test_tui_log_wraps_and_copies()
+    runner.test_fast_startup()
     runner.test_tui_lingering_fold()
     runner.test_preserved_thinking()
     runner.test_x11_clipboard()

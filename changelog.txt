@@ -1,6 +1,16 @@
 AI-Commander changelog
 ======================
 
+2.8.1
+-----
+
+- Faster start, most of all with many saved tabs (9 tabs with long
+  conversations: from about 5 s to under 1.5 s). A restored conversation is
+  written in bulk, without scrolling and redrawing after every line or
+  animating every command's fold; the openai SDK (about a second to import)
+  is imported when first needed, in the background once the TUI is up; and
+  a tab creates its API client only when it first calls the model.
+
 2.8.0
 -----
 

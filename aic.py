@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "2.8.0"
+__version__ = "2.8.1"
 
 import argparse
 import asyncio
@@ -38,8 +38,6 @@ from datetime import datetime, timezone
 from importlib.util import find_spec
 from typing import Any
 
-import openai
-from openai import OpenAI
 
 _IS_WINDOWS = os.name == "nt"
 if not _IS_WINDOWS:  # the PTY command runner and the embedded shell are POSIX-only
@@ -154,14 +152,31 @@ def _powershell_argv(command: str, track_cwd: bool = False) -> list:
     return ["powershell", "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded]
 
 
+OpenAI = None  # the API client class (tests put a stub here); None: openai.OpenAI, see _openai
+
+
+def _openai():
+    """The openai SDK, imported on demand: it takes about a second to import, so
+    the TUI opens without it (and imports it in the background once it is up)."""
+    import openai
+    return openai
+
+
+def _client(**kwargs):
+    return (OpenAI or _openai().OpenAI)(default_headers={"User-Agent": USER_AGENT}, max_retries=0, **kwargs)
+
+
 def _check_openai_version() -> None:
-    """Exit with a clear message when the installed openai SDK is older than 2.0."""
+    """Exit with a clear message when the installed openai SDK is older than 2.0
+    (read from its metadata: importing it would slow down every start)."""
+    from importlib.metadata import PackageNotFoundError, version
     try:
-        major = int(openai.__version__.split(".")[0])
-    except (AttributeError, ValueError):
+        installed = version("openai")
+        major = int(installed.split(".")[0])
+    except (PackageNotFoundError, ValueError):
         return
     if major < 2:
-        sys.exit(f"ERROR: AI-Commander requires openai>=2.0.0 but found {openai.__version__}. "
+        sys.exit(f"ERROR: AI-Commander requires openai>=2.0.0 but found {installed}. "
                  "Upgrade with: pip install --upgrade 'openai>=2.0.0'")
 
 
@@ -339,6 +354,7 @@ def _describe_error(exc: Exception) -> str:
 
 def _is_retryable(exc: Exception) -> bool:
     """Transient failures worth retrying (network, rate limit, server errors)."""
+    openai = _openai()
     if isinstance(exc, openai.APIStatusError):
         return exc.status_code in (408, 409, 425, 429) or exc.status_code >= 500
     if isinstance(exc, (openai.APIConnectionError, openai.APIError, ConnectionError, TimeoutError)):
@@ -1015,9 +1031,7 @@ class AICommander:
         self._temperature_rejected = False  # set once an endpoint accepts only its default temperature
         self._token_param: str | None = ""  # the reply-cap parameter an endpoint asked for ("": by model name)
         self._token_ratio: float | None = None  # server tokens per estimated token (see _calibrate)
-        # Retries are done here (stop-aware, with backoff), not inside the SDK.
-        self.client = OpenAI(api_key=self.api_key, base_url=self.base_url,
-                             default_headers={"User-Agent": USER_AGENT}, max_retries=0)
+        self._client = None  # made on first use (see client)
         def tool(name, description, required, **props):
             return {"type": "function", "function": {"name": name, "description": description, "parameters": {
                 "type": "object", "properties": props, "required": required}}}
@@ -1066,6 +1080,18 @@ class AICommander:
                         "go on without them: an ambiguous requirement, a choice only they can make, missing access "
                         "or credentials. Otherwise decide yourself and keep working.", ["question"],
             question={"type": "string", "description": "The question, with the options you see if there are any"})
+
+    @property
+    def client(self):
+        """The API client, made on first use: a tab restored but never used does
+        not pay for it (loading the CA certificates takes tens of ms)."""
+        if self._client is None:  # (retries are done here, stop-aware, with backoff; not in the SDK)
+            self._client = _client(api_key=self.api_key, base_url=self.base_url)
+        return self._client
+
+    @client.setter
+    def client(self, value) -> None:
+        self._client = value
 
     def pause(self, paused: bool = True):
         """Hold the run before its next LLM call (the current step finishes) or
@@ -3361,8 +3387,22 @@ if _TEXTUAL_AVAILABLE:
             self._dropped = 0  # lines trimmed so far (absolute index - _dropped = index in _lines)
             self._down_at = None  # where the left button went down (a click is not a drag)
             self._anim = None  # (timer, frame) of a fold rolling in or out
+            self._bulk = False  # in bulk(): the view is brought up to date when it ends
 
         # Writing -------------------------------------------------------------
+
+        @contextlib.contextmanager
+        def bulk(self):
+            """Write many lines at once (a restored conversation): their rows are
+            laid out as they come, but the view is updated only at the end, and
+            folds that end roll up without frames."""
+            follow, self._bulk = self._at_bottom(), True
+            try:
+                yield
+            finally:
+                self._bulk = False
+                self._cache.clear()
+                self._settle(follow)
 
         def write(self, text: str, style="") -> None:
             """Append streamed text: '\\n' ends a line, a lone '\\r' rewinds it."""
@@ -3514,6 +3554,10 @@ if _TEXTUAL_AVAILABLE:
                 while k < len(self._lines) - 1 and self._lines[k].owner is head:
                     rows += self._line_rows(k)
                     k += 1
+            if self._bulk:
+                self._rows[pos:end] = [] if head.folded else rows
+                self._cache.clear()
+                return
             total, shown = len(rows), [end - pos]
             steps = iter([round(total * (1 - (1 - t / 8) ** 2)) for t in range(1, 9)])
 
@@ -3650,6 +3694,8 @@ if _TEXTUAL_AVAILABLE:
             excess = len(self._lines) - self.max_lines
             if excess > max(50, self.max_lines // 10):
                 self._trim(excess)
+            if self._bulk:
+                return
             self._roll_up_unseen(follow)
             self.virtual_size = Size(self._width, len(self._rows))
             if follow:
@@ -3673,6 +3719,8 @@ if _TEXTUAL_AVAILABLE:
                 self._reflow()
 
         def _at_bottom(self) -> bool:
+            if self._bulk:
+                return True  # (it decides nothing until the bulk write ends)
             try:
                 if self.screen._selecting:  # never scroll under a drag selection
                     return False
@@ -5698,54 +5746,55 @@ if _TEXTUAL_AVAILABLE:
 
         def render_history(self) -> None:
             """Replay a restored conversation into both panes, with its counters and title."""
-            log, console, agent = self.agent_log, self.console_log, self.agent
-            self.step, self.total_tokens = agent.step_count, agent.usage_totals.get("billable_tokens", 0)
-            results = {m.get("tool_call_id"): _content_text(m.get("content")).strip()
-                       for m in agent.conversation_history if m.get("role") == "tool"}
-            for msg in self.agent.conversation_history:
-                role, text = msg.get("role"), _content_text(msg.get("content")).strip()
-                if role == "user" and text and not _is_continuation(msg) and text != _CONTINUE_PROMPT:
-                    prefix = next((x for x in _SUGGESTION_PREFIXES if text.startswith(x)), None)
-                    if prefix:
-                        self.write_suggestion(text[len(prefix):])
-                    else:
-                        log.write_rule("You", _C_DIM)
-                        log.write_line(text, _C_USER)
-                elif role == "assistant":
-                    text = text.replace(AICommander.COMPLETION_MARKER, "").rstrip()
-                    for line in (text, AICommander.finish_summary(msg)):
-                        if line:
-                            self.write_answer(line)
-                    for tc in msg.get("tool_calls") or []:
-                        name, result = (tc.get("function") or {}).get("name"), results.get(tc.get("id"))
-                        if name == "todo":  # the folded list, as when it ran
-                            todos = AICommander.normalize_todos((_call_args(tc) or {}).get("items"))
-                            if todos:
-                                self.write_todos(todos)
-                            continue
-                        command, match = _tool_command(tc), _RESULT_RE.match(result or "")
-                        label = AICommander.command_label(name, command) if command else "tool result"
-                        output = match.group(2) if match else result or ""
-                        ok = match is not None and match.group(1) == "0"
-                        if command:
-                            self._begin_command(label)
-                            self._command_output(output)
-                            self._end_command()
-                            if match:
-                                lines = len(output.splitlines())
-                                log.write_line(f"  {'✓' if ok else '✗'} exit {match.group(1)} · {lines} line"
-                                               f"{'s' * (lines != 1)}", _C_OK if ok else _C_FAIL)
-                        if result is not None:
-                            _fold_command(console, label)
-                            console.write_line(output[:4000] + ("\n… (truncated)" if len(output) > 4000 else ""),
-                                               "#d0d0d0")
-                            console.end_fold()
-                            if match:
-                                console.write_line(f"{'✓' if ok else '✗'} exit {match.group(1)}",
-                                                   f"bold {_C_OK if ok else _C_FAIL}")
-            log.write_rule("restored session", _C_DIM)
-            self.show_todos(agent.todos)
-            self.set_title(agent.task_summary)
+            with self.agent_log.bulk(), self.console_log.bulk():  # (one update at the end: fast)
+                log, console, agent = self.agent_log, self.console_log, self.agent
+                self.step, self.total_tokens = agent.step_count, agent.usage_totals.get("billable_tokens", 0)
+                results = {m.get("tool_call_id"): _content_text(m.get("content")).strip()
+                           for m in agent.conversation_history if m.get("role") == "tool"}
+                for msg in self.agent.conversation_history:
+                    role, text = msg.get("role"), _content_text(msg.get("content")).strip()
+                    if role == "user" and text and not _is_continuation(msg) and text != _CONTINUE_PROMPT:
+                        prefix = next((x for x in _SUGGESTION_PREFIXES if text.startswith(x)), None)
+                        if prefix:
+                            self.write_suggestion(text[len(prefix):])
+                        else:
+                            log.write_rule("You", _C_DIM)
+                            log.write_line(text, _C_USER)
+                    elif role == "assistant":
+                        text = text.replace(AICommander.COMPLETION_MARKER, "").rstrip()
+                        for line in (text, AICommander.finish_summary(msg)):
+                            if line:
+                                self.write_answer(line)
+                        for tc in msg.get("tool_calls") or []:
+                            name, result = (tc.get("function") or {}).get("name"), results.get(tc.get("id"))
+                            if name == "todo":  # the folded list, as when it ran
+                                todos = AICommander.normalize_todos((_call_args(tc) or {}).get("items"))
+                                if todos:
+                                    self.write_todos(todos)
+                                continue
+                            command, match = _tool_command(tc), _RESULT_RE.match(result or "")
+                            label = AICommander.command_label(name, command) if command else "tool result"
+                            output = match.group(2) if match else result or ""
+                            ok = match is not None and match.group(1) == "0"
+                            if command:
+                                self._begin_command(label)
+                                self._command_output(output)
+                                self._end_command()
+                                if match:
+                                    lines = len(output.splitlines())
+                                    log.write_line(f"  {'✓' if ok else '✗'} exit {match.group(1)} · {lines} line"
+                                                   f"{'s' * (lines != 1)}", _C_OK if ok else _C_FAIL)
+                            if result is not None:
+                                _fold_command(console, label)
+                                console.write_line(output[:4000] + ("\n… (truncated)" if len(output) > 4000 else ""),
+                                                   "#d0d0d0")
+                                console.end_fold()
+                                if match:
+                                    console.write_line(f"{'✓' if ok else '✗'} exit {match.group(1)}",
+                                                       f"bold {_C_OK if ok else _C_FAIL}")
+                log.write_rule("restored session", _C_DIM)
+                self.show_todos(agent.todos)
+                self.set_title(agent.task_summary)
 
         def set_title(self, summary: str) -> None:
             self.agent_log.border_title = f"Agent · {summary}" if summary else "Agent"
@@ -6232,6 +6281,7 @@ if _TEXTUAL_AVAILABLE:
             run the task or loop given on the command line."""
             first = await self._open_tab(self.args.session_file, self.args.instance_number, self.args.session_msg)
             await self._restore_tabs()
+            threading.Thread(target=_openai, daemon=True, name="aic-import-openai").start()  # ready for the 1st task
             self.select_tab(max(self.tabs, key=lambda t: t.reopen_at))  # the tab on screen at the last exit
             self.prompt.focus()
             self.set_interval(1 / 20, self._tick)
@@ -6910,8 +6960,7 @@ def _enable_windows_console_vt() -> None:
 
 def list_models(api_base: str, api_key: str) -> list[str]:
     """The model ids an OpenAI-compatible endpoint lists (GET /models), sorted."""
-    client = OpenAI(api_key=api_key, base_url=api_base.rstrip("/"), default_headers={"User-Agent": USER_AGENT},
-                    max_retries=0, timeout=15)
+    client = _client(api_key=api_key, base_url=api_base.rstrip("/"), timeout=15)
     return sorted({m.id for m in client.models.list() if getattr(m, "id", None)}, key=str.lower)
 
 
