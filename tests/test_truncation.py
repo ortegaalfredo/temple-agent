@@ -1002,6 +1002,11 @@ class TestRunner:
                 await until(pilot, lambda: not tab2.busy())
                 await pilot.pause(0.2)
                 help_kept = type(app.screen).__name__ == "HelpScreen"
+                if help_kept:
+                    shown = dict(app.screen._session())
+                    r["help shows the endpoint, model and settings"] = (
+                        shown["Endpoint"] == "http://localhost:1/v1" and shown["Model"] == "test-model"
+                        and "temperature 0.7" in shown["Sampling"] and "test-key" not in str(shown))
                 await pilot.press("escape")
                 await pilot.pause(0.3)
                 r["a run ending under the help screen closes its approval dialog"] = (
@@ -1033,6 +1038,21 @@ class TestRunner:
                 await pilot.pause(0.1)
                 tab3 = app.tab
                 r["a new tab reuses the free session file"] = tab3.session_file == base + "2"
+                await pilot.press(*"/settings", "enter")
+                await pilot.pause(0.1)
+                r["/settings opens the dialog"] = type(app.screen).__name__ == "SettingsScreen"
+                await pilot.press("ctrl+u", *"0.3", "down", "down", *"40", "enter")  # temperature, top k
+                await pilot.pause(0.1)
+                r["the settings reach every tab"] = all(
+                    t.agent.sampling["temperature"] == 0.3 and t.agent.sampling["top_k"] == 40 for t in app.tabs)
+                r["the log gives the command line"] = "--temperature 0.3 --top-k 40" in tab3.agent_log.plain_text
+                await pilot.press(*"/settings", "enter", "down", *"x", "enter")
+                await pilot.pause(0.1)
+                r["a bad value keeps the dialog open"] = type(app.screen).__name__ == "SettingsScreen"
+                await pilot.press("escape")
+                await pilot.pause(0.1)
+                r["Esc closes it unchanged"] = (type(app.screen).__name__ != "SettingsScreen"
+                                                and tab3.agent.sampling["top_p"] is None)
                 fake(tab3, [answer("third-answer")])
                 await pilot.press(*"hello", "enter")
                 await until(pilot, lambda: not tab3.busy())
@@ -1769,6 +1789,38 @@ class TestRunner:
         c4.call_llm_api([{"role": "user", "content": "x"}], use_tools=False)
         self.check("params: adaptations do not use up the retry attempts", len(fake4.calls) == 5,
                    f"calls={len(fake4.calls)}")
+
+    def test_sampling_settings(self):
+        # --temperature, --top-k...: OpenAI's go top-level, the rest in extra_body; a rejected one goes for good.
+        class Rejected(Exception):
+            status_code = 400
+        done = [fake_openai.content_chunk("ok"), fake_openai.usage_chunk(1, 1)]
+        args = aic.build_parser().parse_args(["--temperature", "0.6", "--top-k", "20", "--min-p", "default",
+                                              "--repetition-penalty", "1.1", "--seed", "7"])
+        c, fake = self.make_fake_commander([done, Rejected("Unrecognized request argument supplied: top_k"),
+                                            done, done])
+        c.sampling.update({k: getattr(args, k) for k in aic._SAMPLING})
+        c.call_llm_api([{"role": "user", "content": "x"}])
+        c.call_llm_api([{"role": "user", "content": "x"}])
+        c.call_llm_api([{"role": "user", "content": "x"}], use_tools=False)
+        first, _, second, text = fake.calls
+        extra = first["extra_body"]
+        self.check("sampling: standard ones top-level, unset ones not sent",
+                   first.get("temperature") == 0.6 and first.get("seed") == 7 and "top_p" not in first
+                   and "min_p" not in extra and "top_k" not in first, repr(first.keys()))
+        self.check("sampling: top_k and the repetition penalty (both names) in extra_body",
+                   extra.get("top_k") == 20 and extra.get("repetition_penalty") == 1.1
+                   and extra.get("repeat_penalty") == 1.1 and "chat_template_kwargs" in extra, repr(extra))
+        self.check("sampling: a rejected top_k is dropped for good, the rest stays",
+                   "top_k" not in second["extra_body"] and "top_k" not in text["extra_body"]
+                   and second["extra_body"].get("repeat_penalty") == 1.1 and c._sampling_rejected == {"top_k"},
+                   repr(second.get("extra_body")))
+        self.check("sampling: summaries keep their own temperature",
+                   text.get("temperature") == 1.0 and text.get("seed") == 7, repr(text.get("temperature")))
+        c2, fake2 = self.make_fake_commander([done])
+        c2.sampling["temperature"] = None
+        c2.call_llm_api([{"role": "user", "content": "x"}])
+        self.check("sampling: an unset temperature is the server's", "temperature" not in fake2.calls[0])
 
     def test_token_calibration(self):
         # The server's exact prompt size rescales the ~3 chars/token estimate.
@@ -3432,6 +3484,7 @@ def main():
     runner.test_summarizer_failures_fall_back()
     runner.test_internal_calls_use_low_effort()
     runner.test_rejected_params_adapt()
+    runner.test_sampling_settings()
     runner.test_token_calibration()
     runner.test_output_limit_cut_off()
     runner.test_context_overflow_is_retried()

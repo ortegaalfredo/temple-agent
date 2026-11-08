@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "2.8.1"
+__version__ = "2.9.0"
 
 import argparse
 import asyncio
@@ -185,6 +185,25 @@ def _env_float(name: str, default: float) -> float:
         return float(os.environ[name])
     except (KeyError, ValueError):
         return default
+
+
+# Sampling settings (--temperature ..., /settings in the TUI): name -> type. None leaves one to the
+# server. The ones OpenAI lacks go in extra_body, under every name the local servers use for them.
+_SAMPLING = {"temperature": float, "top_p": float, "top_k": int, "min_p": float, "presence_penalty": float,
+             "frequency_penalty": float, "repetition_penalty": float, "seed": int}
+_SAMPLING_EXTRA = {"top_k": ("top_k",), "min_p": ("min_p",),
+                   "repetition_penalty": ("repetition_penalty", "repeat_penalty")}  # vLLM/SGLang, llama.cpp
+
+
+def _sampling_value(kind: type, raw: str) -> int | float | None:
+    """A sampling setting typed by the user: "" or "default" leaves it to the server."""
+    raw = raw.strip()
+    return None if raw.lower() in ("", "default", "none") else kind(raw)
+
+
+def _setting_text(value: Any) -> str:
+    """A setting as typed back: 0.95, 20, "" for none."""
+    return "" if value is None else f"{value:g}" if isinstance(value, float) else str(value)
 
 
 def _env_bool(name: str, default: bool) -> bool:
@@ -1028,7 +1047,9 @@ class AICommander:
         self._command_started = 0.0
         self._send_reasoning = True  # off once an endpoint rejects reasoning_content in requests
         self._effort_rejected = False  # set once an endpoint rejects reasoning_effort
-        self._temperature_rejected = False  # set once an endpoint accepts only its default temperature
+        self.sampling: dict[str, int | float | None] = {k: None for k in _SAMPLING}  # see _SAMPLING
+        self.sampling["temperature"] = _env_float("AIC_TEMPERATURE_TOOL", 0.7)
+        self._sampling_rejected: set[str] = set()  # settings an endpoint refused (e.g. o-series temperature)
         self._token_param: str | None = ""  # the reply-cap parameter an endpoint asked for ("": by model name)
         self._token_ratio: float | None = None  # server tokens per estimated token (see _calibrate)
         self._client = None  # made on first use (see client)
@@ -2369,9 +2390,6 @@ Rules:
                 f"I have completed my response. No further actions are needed.\n\n{self.COMPLETION_MARKER}",
                 terminal=True)
         params: dict[str, Any] = {"model": self.model, "messages": messages, "stream": True}
-        if not self._temperature_rejected:  # AIC_TEMPERATURE_TOOL / AIC_TEMPERATURE_TEXT retune these
-            params["temperature"] = (_env_float("AIC_TEMPERATURE_TOOL", 0.7) if use_tools
-                                     else _env_float("AIC_TEMPERATURE_TEXT", 1.0))
         effort = None if self._effort_rejected else (reasoning_effort or self.reasoning_effort)
         if effort:
             params["reasoning_effort"] = effort
@@ -2381,10 +2399,22 @@ Rules:
             params["stream_options"] = {"include_usage": True}
         if self._max_tokens_param():
             params[self._max_tokens_param()] = max_tokens or self.max_tokens
+        extra: dict[str, Any] = {}
         if not self._openai_style() and _env_bool("AIC_EXTRA_BODY", True):  # OpenAI rejects it; some
             # servers pass the effort to the chat template only this way
-            params["extra_body"] = {"chat_template_kwargs": {"enable_thinking": enable_thinking,
-                                                             **({"reasoning_effort": effort} if effort else {})}}
+            extra["chat_template_kwargs"] = {"enable_thinking": enable_thinking,
+                                             **({"reasoning_effort": effort} if effort else {})}
+        for key, value in self.sampling.items():
+            if key == "temperature" and not use_tools and value is not None:
+                value = _env_float("AIC_TEMPERATURE_TEXT", 1.0)  # summaries and titles
+            if value is None or key in self._sampling_rejected:
+                continue
+            if key in _SAMPLING_EXTRA:
+                extra.update(dict.fromkeys(_SAMPLING_EXTRA[key], value))
+            else:
+                params[key] = value
+        if extra:
+            params["extra_body"] = extra
         if use_tools:
             params["tools"] = self._tools()
             params["tool_choice"] = "auto"
@@ -2436,7 +2466,7 @@ Rules:
                     return self._assistant_response(None, stopped=True)
 
     def _adapt_rejected_param(self, params: dict, exc: Exception) -> str:
-        """Fit *params* to an endpoint that rejected the reply cap or the temperature
+        """Fit *params* to an endpoint that rejected the reply cap or a sampling setting
         (OpenAI reasoning models take only max_completion_tokens and their default
         temperature), for this and later calls. Returns what changed, or ""."""
         if getattr(exc, "status_code", None) not in (400, 422) or _is_context_overflow(exc):
@@ -2451,10 +2481,15 @@ Rules:
                 return "The endpoint wants max_completion_tokens instead of max_tokens; retrying with it."
             self._token_param = None
             return f"The endpoint rejected {key}; continuing without a reply cap."
-        if "temperature" in params and "temperature" in text:
-            del params["temperature"]
-            self._temperature_rejected = True
-            return "The endpoint rejected the temperature; continuing with its default."
+        extra = params.get("extra_body") or {}
+        for key in self.sampling:
+            names = _SAMPLING_EXTRA.get(key, (key,))
+            if any(n in params or n in extra for n in names) and any(re.search(rf"\b{n}\b", text) for n in names):
+                for n in names:
+                    params.pop(n, None)
+                    extra.pop(n, None)
+                self._sampling_rejected.add(key)
+                return f"The endpoint rejected {key}; continuing with its default."
         return ""
 
     def _tools(self) -> list[dict]:
@@ -3257,7 +3292,7 @@ if _TEXTUAL_AVAILABLE:
     _SPINNER = "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏"
     _SLASH_COMMANDS = ("/help", "/autoapprove", "/aa", "/approve", "/reject", "/suggest ", "/clear", "/new",
                        "/session", "/reload", "/copy", "/todo", "/loop ", "/stop", "/pause", "/resume", "/unpause", "/newtab", "/closetab", "/tab ",
-                       "/ask", "/quit", "/exit")
+                       "/ask", "/settings", "/config", "/quit", "/exit")
     # Palette (Norton Commander blues).
     _C_USER, _C_ANSWER, _C_THINK = "bold #ffff5f", "#87d7ff", "italic #b2b28a"
     _C_SUGGEST = "#d7af5f"  # the rule over a suggestion sent while the agent works
@@ -5538,12 +5573,75 @@ if _TEXTUAL_AVAILABLE:
         ("Questions", "/ask (or --ask) lets the agent ask you questions; a question waits for your answer: type "
                       "it in the prompt and press Enter (an empty answer or /ask off lets it decide by itself) · "
                       "off by default, so runs can go unattended"),
-        ("Commands", "/help  /aa (/autoapprove)  /ask [on|off]  /clear (/new)  /session  /reload  /copy  /todo  /stop  /pause (/resume, /unpause)  "
+        ("Settings", "/settings (/config) sets the temperature, top-p, top-k, min-p, penalties, seed, reply cap and "
+                     "reasoning effort of every tab until you quit (an empty field: the server's default) · "
+                     "the command line sets them with --temperature, --top-p, --top-k... at startup"),
+        ("Commands", "/help  /aa (/autoapprove)  /ask [on|off]  /settings  /clear (/new)  /session  /reload  /copy  /todo  /stop  /pause (/resume, /unpause)  "
                      "/quit (/exit)  "
                      "·  /loop [file] runs a ralph loop over a prompt file (default PROMPT.md)  "
                      "·  /newtab  /closetab  /tab N  "
                      "·  /approve  /reject  /suggest <text> answer a pending approval"),
     )
+
+    class SettingsScreen(ModalScreen):
+        """/settings: the sampling settings, reply cap and reasoning effort. Tab or ↑↓
+        move, Enter saves, Esc cancels; an empty field leaves a setting to the server."""
+
+        CSS = """
+        SettingsScreen { align: center middle; background: #000000 50%; }
+        #settings { width: 64; max-width: 96%; height: auto; max-height: 90%; border: double #5fd7ff;
+                    background: #0b2f5e; padding: 1 2; }
+        #settings Horizontal { height: 1; }
+        #settings .label { width: 22; color: #87d7ff; }
+        #settings Input { width: 1fr; height: 1; border: none; padding: 0 1; background: #123f78; }
+        #settings Input:focus { background: #1d5a9e; }
+        #settings-error { color: #ff8787; margin: 1 0 0 0; }
+        """
+        BINDINGS = [Binding("escape", "dismiss(None)", show=False),
+                    Binding("up", "app.focus_previous", show=False), Binding("down", "app.focus_next", show=False)]
+        KINDS = {**_SAMPLING, "max_tokens": int, "reasoning_effort": str}
+
+        def __init__(self, values: dict[str, Any]):
+            super().__init__()
+            self.values = values
+
+        def compose(self) -> ComposeResult:
+            with Vertical(id="settings"):
+                for key in self.KINDS:
+                    value = self.values.get(key)
+                    with Horizontal():
+                        yield Static(key.replace("_", " ").capitalize(), classes="label")
+                        yield Input(_setting_text(value), id=f"set-{key}", placeholder="max tokens per reply" if key == "max_tokens"
+                                    else "none" if key == "reasoning_effort" else "server default")
+                yield Static(id="settings-error")
+                yield Static(Text("Tab ↑↓ move · Enter saves for every tab · Esc cancels", _C_DIM))
+
+        def on_mount(self) -> None:
+            self.query_one("#settings").border_title = "Settings"
+            self.query_one(Input).focus()
+
+        def on_input_submitted(self, event: Input.Submitted) -> None:
+            event.stop()
+            values = {}
+            for key, kind in self.KINDS.items():
+                field = self.query_one(f"#set-{key}", Input)
+                try:
+                    if kind is str:
+                        values[key] = field.value.strip() or None
+                    elif key == "max_tokens":
+                        values[key] = int(field.value)
+                        if values[key] <= 0:
+                            raise ValueError
+                    else:
+                        values[key] = _sampling_value(kind, field.value)
+                except ValueError:
+                    self.query_one("#settings-error", Static).update(
+                        f"{key.replace('_', ' ').capitalize()}: "
+                        f"{'a positive whole number' if key == 'max_tokens' else 'a whole number' if kind is int else 'a number'}"
+                        f"{'' if key == 'max_tokens' else ', or empty for the server default'}")
+                    field.focus()
+                    return
+            self.dismiss(values)
 
     class HelpScreen(ModalScreen):
         CSS = """
@@ -5553,16 +5651,48 @@ if _TEXTUAL_AVAILABLE:
         """
         BINDINGS = [Binding("escape,q,enter", "dismiss", show=False)]
 
+        def __init__(self, tab: AgentTab, args):
+            super().__init__()
+            self.tab, self.args = tab, args
+
+        def _session(self) -> list[tuple[str, str]]:
+            """What the current tab runs with (/settings changes the sampling and the replies)."""
+            agent, on = self.tab.agent, lambda flag: "on" if flag else "off"  # noqa: E731
+            sampling = " · ".join(f"{k.replace('_', ' ')} {_setting_text(v)}"
+                                  + (" (rejected by the endpoint)" if k in agent._sampling_rejected else "")
+                                  for k, v in agent.sampling.items() if v is not None)
+            effort = agent.reasoning_effort or "none"
+            return [
+                ("Endpoint", agent.base_url), ("Model", agent.model),
+                ("Sampling", (sampling + " · " if sampling else "") + "the rest: the server's defaults"),
+                ("Replies", f"up to {agent.max_tokens} tokens · reasoning effort {effort}"
+                            + (" (rejected by the endpoint)" if agent._effort_rejected else "")),
+                ("Context", f"{agent.max_prompt_len} tokens · {agent.compress_algorithm} compression to "
+                            f"{agent.compress_target:g} of it" + (" · fast mode" if agent.fast else "")),
+                ("Commands", f"auto-approve {on(self.tab.auto_approve)} · ask before reads "
+                             f"{on(not agent.auto_approve_reads)} · questions {on(agent.ask_user)} · timeout "
+                             f"{agent.command_timeout}s · {agent.max_output_bytes} output bytes · "
+                             f"{agent.max_steps} steps"),
+                ("Sandbox", "Landlock on" if self.args.sandbox_enabled else "off"),
+                ("Session", self.tab.session_file or "not saved"),
+            ]
+
         def compose(self) -> ComposeResult:
-            table = Table.grid(padding=(0, 2))
-            table.add_column(style="bold #87d7ff", no_wrap=True)
-            table.add_column(style="#e5e5e5")
-            for section, text in _HELP:
-                table.add_row(section, text)
             with VerticalScroll(id="help"):
-                yield Static(Text("AI-Commander — keys, mouse and commands\n", style="bold #ffff5f"))
-                yield Static(table)
-                yield Static(Text("\nEsc closes this help.", style=_C_DIM))
+                for heading, rows in (("This session (/settings changes it)", self._session()),
+                                      ("Keys, mouse and commands", _HELP)):
+                    table = Table.grid(padding=(0, 2))
+                    table.add_column(style="bold #87d7ff", no_wrap=True)
+                    table.add_column(style="#e5e5e5")
+                    for section, text in rows:
+                        table.add_row(section, text)
+                    yield Static(Text(heading, style=f"bold {_C_ANSWER}"))
+                    yield Static(table)
+                    yield Static("")
+                yield Static(Text("Esc closes this help.", style=_C_DIM))
+
+        def on_mount(self) -> None:
+            self.query_one("#help").border_title = f"AI-Commander {__version__}"
 
     _REPO_URL = "https://github.com/ortegaalfredo/AICommander"
     _TUTORIAL = (
@@ -6582,6 +6712,7 @@ if _TEXTUAL_AVAILABLE:
             actions = {
                 "/help": self.action_help, "/autoapprove": self.action_toggle_auto, "/aa": self.action_toggle_auto,
                 "/ask": lambda: self._set_ask(arg),
+                "/settings": self.action_settings, "/config": self.action_settings,
                 "/clear": self._clear_conversation, "/new": self._clear_conversation,
                 "/session": self._report_session, "/reload": self._reload_session,
                 "/copy": self._copy_answer, "/todo": self._report_todos, "/stop": self.action_stop,
@@ -6613,6 +6744,29 @@ if _TEXTUAL_AVAILABLE:
                 "Questions are ON: the agent may stop and ask you; it waits for your answer. /ask turns them off."
                 if tab.agent.ask_user else "Questions are OFF: the agent decides by itself and can run unattended.",
                 "#ffd75f" if tab.agent.ask_user else _C_OK)
+
+        def action_settings(self) -> None:
+            agent = self.tab.agent
+            self.push_screen(SettingsScreen({**agent.sampling, "max_tokens": agent.max_tokens,
+                                             "reasoning_effort": agent.reasoning_effort}), self._apply_settings)
+
+        def _apply_settings(self, values: dict[str, Any] | None) -> None:
+            """Every tab, and the tabs opened later, take the settings until the app quits."""
+            if values is None:
+                return
+            for key, value in values.items():
+                setattr(self.args, key, value)
+            sampling = {k: values[k] for k in _SAMPLING}
+            for tab in self.tabs:
+                agent = tab.agent
+                agent._sampling_rejected -= {k for k in _SAMPLING if agent.sampling[k] != sampling[k]}  # retry
+                agent._effort_rejected &= agent.reasoning_effort == values["reasoning_effort"]
+                agent.sampling = dict(sampling)  # one assignment: the agent thread may be reading it
+                agent.max_tokens, agent.reasoning_effort = values["max_tokens"], values["reasoning_effort"]
+            parser = build_parser()
+            flags = " ".join(f"--{k.replace('_', '-')} {_setting_text(v) or 'default'}" for k, v in values.items() if v != parser.get_default(k))
+            self.agent_log.write_line("Settings saved for every tab until you quit"
+                                      + (f"; to keep them, start with: {flags}" if flags else "."), _C_OK)
 
         def _report_todos(self) -> None:
             if self.tab.agent.todos:
@@ -6751,7 +6905,7 @@ if _TEXTUAL_AVAILABLE:
             if isinstance(self.screen, HelpScreen):
                 self.screen.dismiss()
             else:
-                self.push_screen(HelpScreen())
+                self.push_screen(HelpScreen(self.tab, self.args))
 
         def _set_auto_approve(self, value: bool, tab: AgentTab | None = None) -> None:
             tab = tab or self.tab
@@ -7014,6 +7168,7 @@ def agent_from_args(args, sink: EventSink, **settings) -> AICommander:
         sandbox_write_dir=args.sandbox_write_dir, verify_command=args.verify,
         auto_approve_reads=not args.confirm_reads, ask_user=getattr(args, "ask", False), **settings)
     agent.max_tokens = getattr(args, "max_tokens", None) or agent.max_tokens
+    agent.sampling.update({k: getattr(args, k) for k in _SAMPLING if hasattr(args, k)})
     return agent
 
 
@@ -7075,6 +7230,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--fast", action="store_true",
                         help="Fast mode: 'truncate' compression and a smaller system prompt")
     parser.add_argument("--reasoning-effort", default=None, help="Reasoning effort (e.g. low, medium, high)")
+    sampling = parser.add_argument_group("sampling", "Sent with every request; 'default' leaves one to the server "
+                                         "(the TUI changes them with /settings)")
+    for key, kind in _SAMPLING.items():
+        value = lambda raw, kind=kind: _sampling_value(kind, raw)  # noqa: E731
+        value.__name__ = kind.__name__  # argparse names the type in its errors
+        sampling.add_argument("--" + key.replace("_", "-"), type=value, metavar="N",
+                              default=_env_float("AIC_TEMPERATURE_TOOL", 0.7) if key == "temperature" else None,
+                              help={"temperature": "Sampling temperature (default: $AIC_TEMPERATURE_TOOL or 0.7; "
+                                                   "summaries use $AIC_TEMPERATURE_TEXT or 1.0)",
+                                    "seed": "Random seed (default: the server's)"}.get(
+                                  key, f"{key.replace('_', ' ').capitalize()} (default: the server's)"))
     parser.add_argument("--session", default=None,
                         help=f"Session file mirroring the conversation (default: ./{_SESSION_BASENAME}); "
                              f"rewritten after every step and reloaded on startup. Plain JSON: its "

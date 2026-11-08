@@ -216,6 +216,11 @@ panel. In `--nogui` mode a request is required on the command line.
 | `--compress-target` | Fraction of the prompt budget retained as headroom (default: `0.4`). |
 | `--fast` | Fast mode: force `truncate` compression and a smaller system prompt, for slow inference systems. |
 | `--reasoning-effort` | Reasoning effort for the LLM (e.g. `low`, `medium`, `high`). |
+| `--temperature N` | Sampling temperature for the agent's turns (default `$AIC_TEMPERATURE_TOOL` or `0.7`; summaries keep `$AIC_TEMPERATURE_TEXT` or `1.0`). `default` leaves it to the server. |
+| `--top-p`, `--top-k`, `--min-p` | Nucleus, top-k and min-p sampling (default: the server's). `--top-k` and `--min-p` are not OpenAI parameters, so they are sent in the request's extra fields, which llama.cpp, vLLM and SGLang read. |
+| `--presence-penalty`, `--frequency-penalty` | OpenAI's repetition penalties (default: the server's). |
+| `--repetition-penalty` | The local servers' multiplicative repetition penalty, sent as `repetition_penalty` (vLLM, SGLang) and `repeat_penalty` (llama.cpp) (default: the server's). |
+| `--seed` | Random seed (default: the server's). |
 | `--loop FILE` | Ralph loop over a prompt file (see [Ralph loop mode](#ralph-loop-mode)). |
 | `--max-iterations` | Maximum `--loop` iterations (default: `10`; `0` = unlimited). |
 | `--verify CMD` | A command (e.g. `pytest -q`) that must exit 0 before a completion signal is accepted (see [The verification gate](#the-verification-gate)). |
@@ -402,7 +407,7 @@ controls, so they are **not** added to prompt history:
 
 | Command | Aliases | Description |
 | ------- | ------- | ----------- |
-| `/help` | — | Show keys, mouse actions and commands (same as `F1`). |
+| `/help` | — | Show what the current tab runs with (endpoint, model, sampling, limits, approvals, sandbox, session file), then the keys, mouse actions and commands (same as `F1`). |
 | `/autoapprove` | `/aa` | Toggle auto-approve on/off (same as `F2`). When ON, commands run without asking. |
 | `/clear` | `/new` | Clear the conversation history and start a fresh session (resets tokens, step count, and session id). The session file is emptied too, so nothing is resurrected on the next startup. A running agent is stopped first. |
 | `/session` | — | Show the session file, session id, instance number, and what is currently saved on disk. |
@@ -418,6 +423,7 @@ controls, so they are **not** added to prompt history:
 | `/quit` | `/exit` | Exit the application; while an agent runs, after a confirmation (the agent is stopped). |
 | `/approve`, `/reject`, `/suggest <text>` | — | Answer a pending approval (normally done in the approval dialog). |
 | `/ask [on\|off]` | — | Toggle (or set) whether the current tab's agent may [ask you questions](#questions-from-the-agent). |
+| `/settings` | `/config` | A dialog for the sampling settings (temperature, top-p, top-k, min-p, penalties, seed), the reply cap and the reasoning effort. They apply to every tab and to new ones until you quit; the log then prints the matching command-line flags. An empty field leaves a setting to the server. |
 
 ### Keyboard shortcuts
 
@@ -428,7 +434,7 @@ controls, so they are **not** added to prompt history:
 | `Up` / `Ctrl+P`, `Down` / `Ctrl+N` | Previous / next prompt in history (when the cursor is on the first / last line). |
 | `Ctrl+R` | Reverse incremental search over prompt history. |
 | `Tab` | Complete a `/command`; otherwise move to the next pane. |
-| `F1` | Help. |
+| `F1` | Help: the current endpoint, model and settings, then the keys and commands. |
 | `F2` | Toggle auto-approve. |
 | `F3` | Cycle the right pane: Status → Shell → Tools → Help. |
 | `F4` / `F5` | Copy (the selection, or the last answer) / paste. |

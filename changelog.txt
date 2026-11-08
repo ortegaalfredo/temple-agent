@@ -1,6 +1,23 @@
 AI-Commander changelog
 ======================
 
+2.9.0
+-----
+
+- Sampling settings: --temperature, --top-p, --top-k, --min-p,
+  --presence-penalty, --frequency-penalty, --repetition-penalty and --seed
+  (default: the server's, except the temperature, 0.7 as before; 'default'
+  leaves one to the server). top-k, min-p and the repetition penalty go in
+  the request's extra fields, the repetition penalty under both the
+  vLLM/SGLang and llama.cpp names. A setting the endpoint rejects is
+  dropped for the rest of the session, as the temperature already was.
+- /settings (or /config) in the TUI: a dialog for those settings, the reply
+  cap and the reasoning effort. They apply to every tab and to new ones until
+  quitting, and the log prints the command-line flags that keep them.
+- The F1 help dialog first shows what the current tab runs with: endpoint,
+  model, sampling, reply cap and reasoning effort, context, approvals,
+  limits, sandbox and session file.
+
 2.8.1
 -----
 
