@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "2.9.0"
+__version__ = "2.9.1"
 
 import argparse
 import asyncio
@@ -291,7 +291,8 @@ _READ_ONLY_COMMANDS = frozenset(
     "strings md5sum sha1sum sha256sum test [ true false git".split()
     + os.environ.get("AIC_READ_ONLY_COMMANDS", "").split())
 _READ_ONLY_DENY = {"find": ("-exec", "-ok", "-delete", "-fprint", "-fls"), "sort": ("-o", "--output", "--compress"),
-                   "rg": ("--pre",), "tree": ("-o", "--output"), "git": ("--output", "-O", "--open-files-in-pager", "--ext-diff")}
+                   "rg": ("--pre", "--hostname-bin"), "tree": ("-o", "--output"),
+                   "git": ("--output", "-O", "--open-files-in-pager", "--ext-diff")}
 _GIT_READ_ONLY = frozenset("status diff log show blame ls-files grep rev-parse describe shortlog branch".split())
 _GIT_BRANCH_LIST = frozenset("-a -r -v -vv --all --list --show-current".split())
 
@@ -706,6 +707,18 @@ def acquire_session_file(session_path: str | None = None) -> tuple[str, int]:
     return "", 0
 
 
+def _can_write_in(folder: str) -> bool:
+    """Whether a file can be created in *folder* (the Landlock sandbox may forbid it)."""
+    try:
+        fd, probe = tempfile.mkstemp(prefix=".aic-probe-", dir=folder or None)
+    except OSError:
+        return False
+    os.close(fd)
+    with contextlib.suppress(OSError):
+        os.unlink(probe)
+    return True
+
+
 def saved_session_files(session_path: str | None = None) -> list[tuple[str, int]]:
     """The session files of ``<path>``, ``<path>2``, ... on disk, as (path, instance_number)."""
     base = _session_base(session_path)
@@ -1040,6 +1053,7 @@ class AICommander:
         self.resume_event.set()
         self.suggestion_queue: queue.Queue = queue.Queue()
         self._session_write_lock = threading.RLock()
+        self._save_warned = False  # a failed session save was reported (see save_session)
         self._active_streams: set = set()
         self._summary_generation = 0
         self._current_request: dict | None = None
@@ -1252,8 +1266,10 @@ class AICommander:
         except Exception as exc:
             with contextlib.suppress(OSError):
                 os.unlink(tmp)
-            if self.debug:
-                self._log(f"[SESSION] Could not save {self.session_file}: {exc}", style="yellow")
+            if self.debug or not self._save_warned:  # once: it fails at every step after that
+                self._save_warned = True
+                self._log(f"[SESSION] Could not save {self.session_file}: {exc}"
+                          + ("" if self.debug else " (further failures are not shown)"), style="yellow")
             return False
 
     @staticmethod
@@ -1394,6 +1410,9 @@ class AICommander:
         so the next startup does not resurrect it."""
         self.conversation_history, self.todos, self.cwd = [], [], self.start_cwd
         self.changes, self._dirty_text, self.last_reply = {}, {}, {}
+        # Jobs still running stay on the Status pane (and are stopped at exit), but their
+        # exit is not reported into the new conversation, which never started them.
+        self.jobs = {}
         self.job_history = {n: job for n, job in self.job_history.items() if job[0].poll() is None}
         self.step_count = 0
         self.initial_prompt = self.task_summary = ""
@@ -1432,11 +1451,16 @@ class AICommander:
 
     # --- Context compression -------------------------------------------------
 
+    def _reply_cap(self) -> int:
+        """The reply cap sent and reserved out of the window: max_tokens, at most half
+        the window (a cap as large as the window would leave the prompt no room)."""
+        return max(1, min(self.max_tokens, self.max_prompt_len // 2))
+
     def _prompt_budget(self) -> int:
         """Tokens the prompt may use: the window minus the completion reservation
         (only models that are sent a reply cap reserve it)."""
         if self._max_tokens_param():
-            return max(0, self.max_prompt_len - self.max_tokens)
+            return max(0, self.max_prompt_len - self._reply_cap())
         return self.max_prompt_len
 
     def _openai_style(self) -> bool:
@@ -1692,6 +1716,8 @@ Remember to not exceed 5000 characters, its very important that the summary to b
             while start and kept + sizes[start - 1] <= t_retained - t_summary:
                 start -= 1
                 kept += sizes[start]
+        while 0 < start < len(entries) and entries[start][1].get("role") == "tool":
+            start += 1  # never cut between a tool call and its results: they go to the summarizer together
         if not start:
             self._log("[COMPRESS] Nothing could be summarized; falling back to 'truncate'.", style="yellow")
             return self._compress_truncate(budget, self._estimate_input_tokens(hist))
@@ -1899,24 +1925,28 @@ Rules:
             self._kill_proc(self.job_history[n][0])
 
     def _cleanup(self) -> None:
-        for proc, _log, _command in self.jobs.values():
+        """Stop the background jobs still running and remove the scratch directory."""
+        for proc, *_ in list(self.job_history.values()):
             self._kill_proc(proc)
         if self._scratch:
             shutil.rmtree(self._scratch, ignore_errors=True)
 
     def _execute_posix(self, command: str, cwd: str, cwd_file: str) -> tuple[str, int]:
+        # Everything is prepared before the fork: other threads run in this process, so
+        # the child only makes system calls (setting os.environ there takes libc's lock).
+        env = {**os.environ, **_COMMAND_ENV, "PWD": cwd, "AIC_CWD_FILE": cwd_file}
+        argv = [_POSIX_SHELL, "-c", _SHELL_PRELUDE + (_CWD_TRAP if cwd_file else "") + command]
+        winsize = struct.pack("HHHH", 50, 200, 0, 0)  # a wide window: fewer wrapped lines
         try:
             pid, fd = pty.fork()
         except OSError as exc:
             return self._finish_command(bytearray(f"Failed to start a shell: {exc}\n".encode()), command, 1, False)
         if pid == 0:  # child (a session leader on the PTY)
             try:
-                os.environ.update(_COMMAND_ENV, PWD=cwd, AIC_CWD_FILE=cwd_file)
                 os.chdir(cwd)
-                with contextlib.suppress(OSError):  # a wide window: fewer wrapped lines
-                    fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", 50, 200, 0, 0))
-                os.execv(_POSIX_SHELL, [_POSIX_SHELL, "-c",
-                                        _SHELL_PRELUDE + (_CWD_TRAP if cwd_file else "") + command])
+                with contextlib.suppress(OSError):
+                    fcntl.ioctl(0, termios.TIOCSWINSZ, winsize)
+                os.execve(_POSIX_SHELL, argv, env)
             except BaseException as exc:
                 with contextlib.suppress(Exception):
                     os.write(2, f"cannot run {_POSIX_SHELL} in {cwd}: {exc}\n".encode())
@@ -2170,36 +2200,46 @@ Rules:
             return f.read()
 
     def _read_file(self, path: str, offset, limit) -> str:
-        """Numbered lines of a file, cut at whole lines to fit max_output_bytes."""
-        with open(path, "rb") as f:
-            data = f.read()
-        if b"\0" in data[:8192]:
-            return f"{path} looks binary ({len(data)} bytes); inspect it with execute_bash (e.g. xxd | head)."
-        lines = data.decode("utf-8", "replace").splitlines()
-        if not lines:
-            return "(empty file)"
+        """Numbered lines of a file, cut at whole lines to fit max_output_bytes. Lines
+        end at \\n only, as for grep -n and sed -n; the file is streamed, not loaded."""
         with contextlib.suppress(TypeError, ValueError):
             offset = int(offset)
         with contextlib.suppress(TypeError, ValueError):
             limit = int(limit)
         start = max(1, offset if isinstance(offset, int) else 1)
-        stop = min(len(lines), start - 1 + max(1, limit if isinstance(limit, int) else 2000))
-        if start > len(lines):
-            return f"offset {start} is past the end of the file ({len(lines)} lines)."
-        out, size, end = [], 0, start - 1
-        for n in range(start, stop + 1):
-            row = f"{n}\t{lines[n - 1]}\n"
-            size += len(row.encode("utf-8"))
-            if size > self.max_output_bytes:
-                if not out:  # a single line longer than the cap
-                    out.append(row.encode("utf-8")[:self.max_output_bytes].decode("utf-8", "ignore")
-                               + f"\n{self.OUTPUT_TRUNCATION_SENTINEL}\n")
-                    end = n
-                break
-            out.append(row)
-            end = n
-        more = f"\n[lines {start}-{end} of {len(lines)}; call read_file with offset={end + 1} to continue]"
-        return "".join(out) + (more if end < len(lines) else "")
+        stop = start - 1 + max(1, limit if isinstance(limit, int) else 2000)
+        out, size, end, n = [], 0, start - 1, 0
+        with open(path, "rb") as f:
+            if b"\0" in f.read(8192):
+                return (f"{path} looks binary ({os.fstat(f.fileno()).st_size} bytes); inspect it with "
+                        f"execute_bash (e.g. xxd | head).")
+            f.seek(0)
+            for n, raw in enumerate(f, 1):
+                if n < start:
+                    continue
+                if n > stop:
+                    break
+                line = raw.decode("utf-8", "replace").removesuffix("\n").removesuffix("\r")
+                row = f"{n}\t{line}\n"
+                size += len(row.encode("utf-8"))
+                if size > self.max_output_bytes:
+                    if not out:  # a single line longer than the cap
+                        out.append(row.encode("utf-8")[:self.max_output_bytes].decode("utf-8", "ignore")
+                                   + f"\n{self.OUTPUT_TRUNCATION_SENTINEL}\n")
+                        end = n
+                    break
+                out.append(row)
+                end = n
+            rest, last = 0, b"\n"  # count the lines left without keeping them
+            for chunk in iter(lambda: f.read(1 << 20), b""):
+                rest, last = rest + chunk.count(b"\n"), chunk[-1:]
+        total = n + rest + (last != b"\n")
+        if not total:
+            return "(empty file)"
+        if start > total:
+            return f"offset {start} is past the end of the file ({total} lines)."
+        more = f"\n[lines {start}-{end} of {total}; call read_file with offset={end + 1} to continue]"
+        return "".join(out) + (more if end < total else "")
 
     def _prepare_file_tool(self, name: str, args: dict) -> tuple[str, str, Any]:
         """Check a file tool call before it is approved. Returns (summary, preview,
@@ -2398,7 +2438,7 @@ Rules:
         if _env_bool("AIC_STREAM_OPTIONS", True):
             params["stream_options"] = {"include_usage": True}
         if self._max_tokens_param():
-            params[self._max_tokens_param()] = max_tokens or self.max_tokens
+            params[self._max_tokens_param()] = min(max_tokens, self._reply_cap()) if max_tokens else self._reply_cap()
         extra: dict[str, Any] = {}
         if not self._openai_style() and _env_bool("AIC_EXTRA_BODY", True):  # OpenAI rejects it; some
             # servers pass the effort to the chat template only this way
@@ -2942,12 +2982,20 @@ Rules:
 
     def _compaction_note(self) -> None:
         """After a compaction, restate what the summary may have lost: where
-        commands start and the task list."""
+        commands start, the task list, the files changed and the jobs running."""
         notes = []
         if self.cwd != self.start_cwd:
             notes.append(f"Commands start in {self.cwd}.")
         if self.todos:
             notes.append(f"Your current task list (todo tool):\n{self._todo_text()}")
+        if self.changes:
+            paths = list(self.changes)
+            notes.append("Files you changed in this session (read one again before editing it):\n"
+                         + "\n".join(f"- {p}" for p in paths[-40:])
+                         + (f"\n(and {len(paths) - 40} more)" if len(paths) > 40 else ""))
+        if self.jobs:
+            notes.append("Background jobs still running:\n" + "\n".join(
+                f"- job {n}: {command} (log {log})" for n, (_proc, log, command) in self.jobs.items()))
         last = _content_text(self.conversation_history[-1].get("content"))
         if notes and not last.startswith("[CONTEXT COMPACTED]"):
             self.conversation_history.append({"role": "user", "content": "[CONTEXT COMPACTED] " + "\n".join(notes)})
@@ -3165,7 +3213,7 @@ Rules:
                     break
                 content, calls, _first_id, thinking, malformed = self.process_llm_response(response)
                 if message.get("truncated"):
-                    self._log(f"[INFO] The reply hit the output limit ({self.max_tokens} tokens, thinking "
+                    self._log(f"[INFO] The reply hit the output limit ({self._reply_cap()} tokens, thinking "
                               f"included) and was cut off" + ("; its tool call was lost." if not calls else "."),
                               style="yellow")
                 if message.get("truncated") and not calls and not malformed:
@@ -3179,7 +3227,7 @@ Rules:
                     if content.strip():
                         self.conversation_history.append({"role": "assistant", "content": content})
                     self.conversation_history.append({"role": "user", "content": (
-                        f"[SYSTEM NOTE] Your last reply was cut off at the output limit of {self.max_tokens} "
+                        f"[SYSTEM NOTE] Your last reply was cut off at the output limit of {self._reply_cap()} "
                         f"tokens (thinking included), so it ended before its tool call was complete and the "
                         f"call was lost. Keep each tool call much smaller: split big files and edits into "
                         f"several calls, e.g. write_file with the first part, then edit_file or "
@@ -3211,8 +3259,11 @@ Rules:
                 # Saved before any command runs: a crash mid-command leaves this
                 # (unanswered) call on disk, closed as "not re-executed" on reload.
                 self.save_session("assistant_message")
-                loop_done = bool(self.loop_iteration) and _has_marker(content, self.LOOP_COMPLETE_MARKER)
-                done = loop_done or _has_marker(content, self.COMPLETION_MARKER)
+                # A text marker ends the run only in a turn without tool calls: the model must
+                # see their results first.
+                text_turn = not (calls or malformed)
+                loop_done = text_turn and bool(self.loop_iteration) and _has_marker(content, self.LOOP_COMPLETE_MARKER)
+                done = loop_done or (text_turn and _has_marker(content, self.COMPLETION_MARKER))
                 if calls or malformed:
                     finish = self._run_tool_calls(calls, malformed)
                     self._todo_reminder(calls)
@@ -4393,19 +4444,19 @@ if _TEXTUAL_AVAILABLE:
                 self._status = "The interactive shell needs a POSIX system and the 'pyte' package."
                 return
             shell = os.environ.get("SHELL") or "/bin/sh"
+            env, winsize = {**os.environ, "TERM": "xterm-256color"}, struct.pack("HHHH", rows, cols, 0, 0)
             try:
                 pid, fd = pty.fork()
             except OSError as exc:
                 self._status = f"Could not start a shell: {exc}"
                 return
-            if pid == 0:
+            if pid == 0:  # (only system calls here: see _execute_posix)
                 try:
-                    os.environ["TERM"] = "xterm-256color"
                     with contextlib.suppress(OSError):
-                        fcntl.ioctl(0, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+                        fcntl.ioctl(0, termios.TIOCSWINSZ, winsize)
                     for candidate in (shell, "/bin/sh"):
                         with contextlib.suppress(OSError):
-                            os.execv(candidate, [candidate])
+                            os.execve(candidate, [candidate], env)
                 finally:
                     os._exit(127)
             self._pid, self._fd = pid, fd
@@ -6545,6 +6596,7 @@ if _TEXTUAL_AVAILABLE:
                 i = self.tabs.index(tab)
                 self.select_tab(self.tabs[i + 1] if i + 1 < len(self.tabs) else self.tabs[i - 1])
             self.tabs.remove(tab)
+            tab.agent._cleanup()  # its background jobs stop with it
             tab.agent.session_file = ""  # a late save (the title summarizer) must not recreate it
             if tab.session_file:  # nothing to resume: drop the file, then the lock
                 with contextlib.suppress(OSError):
@@ -7204,8 +7256,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-prompt-len", type=int, default=DEFAULT_MAX_PROMPT_LEN,
                         help=f"Maximum prompt length in tokens (default: {DEFAULT_MAX_PROMPT_LEN})")
     parser.add_argument("--max-tokens", type=int, default=16000,
-                        help="Maximum tokens per model reply, thinking included (default: 16000); also "
-                             "reserved out of --max-prompt-len. Raise it if big edits get cut off")
+                        help="Maximum tokens per model reply, thinking included (default: 16000; at most half "
+                             "of --max-prompt-len); also reserved out of --max-prompt-len. Raise it if big "
+                             "edits get cut off")
     parser.add_argument("--max-output-bytes", type=int, default=10240,
                         help="Maximum output bytes returned from a command (default: 10240); the command "
                              "is killed after printing 5x as much")
@@ -7269,6 +7322,10 @@ def main():
     # Keep the key out of the environment the agent's commands inherit (and the model could print).
     env_key = os.environ.pop("AIC_API_KEY", None)
     openai_key = os.environ.pop("OPENAI_API_KEY", None)
+    if sys.platform == "linux":  # popped keys stay in /proc/<pid>/environ: make it unreadable to the commands
+        with contextlib.suppress(Exception):  # (this also turns off core dumps and debugger attach)
+            import ctypes
+            ctypes.CDLL(None).prctl(4, 0)  # PR_SET_DUMPABLE = 0
     args.api_key = args.api_key or env_key or openai_key
     for name, env in (("api_base", "AIC_API_BASE"), ("api_key", "AIC_API_KEY")):
         if not getattr(args, name):
@@ -7316,12 +7373,17 @@ def main():
         args.sandbox_enabled, args.sandbox_msg = False, "[SANDBOX] Sandbox disabled via --disable-sandbox"
     else:
         args.sandbox_enabled, args.sandbox_msg = enable_sandbox()
+    session_dir = os.path.dirname(args.session_file)
+    if args.sandbox_enabled and args.session_file and not _can_write_in(session_dir):
+        args.session_msg = (f"[SESSION] WARNING: the sandbox blocks writes to {session_dir}, so the session "
+                            f"will not be saved: use a --session path under {os.getcwd()} or /tmp, or "
+                            f"--disable-sandbox")
 
     if args.nogui:
         sink = JsonSink() if args.json else ConsoleSink()
         sink.emit("LOG", {"text": args.sandbox_msg, "style": "green" if args.sandbox_enabled else "red"})
-        sink.emit("LOG", {"text": args.session_msg,
-                          "style": "green" if args.session_file and args.instance_number == 1 else "yellow"})
+        sink.emit("LOG", {"text": args.session_msg, "style": "green" if args.session_file and args.instance_number == 1
+                          and "WARNING" not in args.session_msg else "yellow"})
         commander = agent_from_args(args, sink, session_file=args.session_file,
                                     instance_number=args.instance_number)
         commander.persist_history = commander.load_session()  # resume where the last run stopped

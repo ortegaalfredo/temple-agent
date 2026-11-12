@@ -3170,7 +3170,8 @@ class TestRunner:
                   "find . -delete", "find . -exec rm {} +", "git push", "git branch -D x", "sort -o out x",
                   "./ls", "FOO=1 ls", "ls &", "uniq a b", "cat a#b; rm x", "ls | sh", "tee x", "python3 -c 1",
                   "git -c core.pager=x log", "git diff --output=x", "cat <(rm x)", "'unterminated", "",
-                  "sort -no out x", "git grep -iO x", "tree -ao out", "printenv"]
+                  "sort -no out x", "git grep -iO x", "tree -ao out", "printenv",
+                  "rg --hostname-bin ./x --hyperlink-format 'x://{host}{path}' foo ."]
         self.check("read-only: plain reads qualify", all(ro(cmd) for cmd in safe), [cmd for cmd in safe if not ro(cmd)])
         self.check("read-only: writes, substitutions and unknowns do not", not any(ro(cmd) for cmd in unsafe),
                    [cmd for cmd in unsafe if ro(cmd)])
@@ -3306,6 +3307,102 @@ class TestRunner:
             pass
         self.check("jobs: killed and cleaned up at exit", proc.returncode is not None
                    and not os.path.isdir(c2._scratch))
+
+    def test_review_fixes(self):
+        """2.9.1: compaction keeps tool calls with their results, read_file streams and
+        counts lines as grep does, the text marker waits for tool results, the reply
+        cap leaves the prompt room, and jobs, failed saves and compaction notes."""
+        import random
+        import tempfile
+
+        # Compaction: every tool result is either kept or shown to the summarizer.
+        lost = 0
+        for seed in range(40):
+            rng, n = random.Random(seed), 0
+            c = self.make_commander(max_prompt_len=40000)
+            hist = [{"role": "system", "content": "SYSTEM " * 200}, {"role": "user", "content": "task"}]
+            for _ in range(60):
+                calls = []
+                for _ in range(rng.randint(1, 3)):
+                    n += 1
+                    calls.append({"id": f"c{n}", "type": "function",
+                                  "function": {"name": "execute_bash", "arguments": '{"command": "x"}'}})
+                hist.append({"role": "assistant", "content": "x" * rng.randint(0, 1500), "tool_calls": calls})
+                hist += [{"role": "tool", "tool_call_id": tc["id"], "content": f"R-{tc['id']} " + "o" * rng.randint(50, 9000)}
+                         for tc in calls]
+            c.conversation_history, c._current_request = hist, hist[1]
+            seen = []
+            c._llm_summarize = lambda msgs, prev, seen=seen: (seen.extend(msgs), "SUMMARY")[1]
+            ids = {m["tool_call_id"] for m in hist if m["role"] == "tool"}
+            c._context_compress()
+            kept = {m["tool_call_id"] for m in c._sanitize_tool_pairing(c.conversation_history) if m["role"] == "tool"}
+            summarized = {m["content"].split()[0][2:] for m in seen if m["role"] == "tool"}
+            lost += len(ids - kept - summarized)
+        self.check("fixes: compaction never drops a tool result unseen", lost == 0, f"lost={lost}")
+
+        # read_file: lines end at \n only; totals counted without loading the file.
+        c = self.make_commander()
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "f.txt")
+            with open(path, "w", newline="") as f:
+                f.write("a\n\x0c\nb\x1cc\r\nlast")
+            r = c._read_file(path, 1, 100)
+            self.check("fixes: read_file splits at \\n only, CRLF and no final newline",
+                       r == "1\ta\n2\t\x0c\n3\tb\x1cc\n4\tlast\n", repr(r))
+            with open(path, "w") as f:
+                f.write("".join(f"line {i}\n" for i in range(1, 50001)))
+            r = c._read_file(path, 10, 2)
+            self.check("fixes: read_file offset/limit and total", r.startswith("10\tline 10\n11\tline 11\n")
+                       and "[lines 10-11 of 50000; call read_file with offset=12" in r, repr(r[-90:]))
+            self.check("fixes: read_file past the end", "past the end of the file (50000 lines)"
+                       in c._read_file(path, 60000, 1))
+            open(path, "w").close()
+            self.check("fixes: read_file empty file", c._read_file(path, 1, 10) == "(empty file)")
+
+        # The text marker beside tool calls: the results are seen before the run ends.
+        turn = [fake_openai.content_chunk("running the tests\nTASKCOMPLETE"),
+                fake_openai.tool_call_chunk(0, id="t", name="execute_bash", arguments='{"command": "echo hi"}'),
+                fake_openai.usage_chunk(1, 1)]
+        c, fake = self.make_fake_commander([turn, self._done()])
+        status = c.run("task")
+        self.check("fixes: a marker beside tool calls waits for their results",
+                   status == "complete" and len(fake.calls) == 2, f"status={status} calls={len(fake.calls)}")
+
+        # The reply cap is at most half the window, sent and reserved.
+        c, fake = self.make_fake_commander([self._done()], max_prompt_len=16000)
+        c.max_tokens = 16000
+        c.call_llm_api([{"role": "user", "content": "x"}], use_tools=False)
+        self.check("fixes: reply cap at most half the window",
+                   c._prompt_budget() == 8000 and fake.calls[0].get("max_tokens") == 8000,
+                   f"budget={c._prompt_budget()} sent={fake.calls[0].get('max_tokens')}")
+
+        # The compaction note restates changed files and running jobs.
+        c = self.make_commander()
+        c.conversation_history = [{"role": "system", "content": "s"}, {"role": "user", "content": "u"}]
+        c._note_change("/tmp/aic-test/changed.py", None, "file")
+        c._start_job("sleep 30")
+        c._compaction_note()
+        note = c.conversation_history[-1]["content"]
+        self.check("fixes: compaction note lists changed files and jobs",
+                   "/tmp/aic-test/changed.py" in note and "job 1: sleep 30" in note, note)
+
+        # /clear forgets the jobs' reports but not the jobs; cleanup stops them.
+        proc = c.jobs[1][0]
+        c.discard_session()
+        self.check("fixes: /clear stops reporting old jobs", not c.jobs and 1 in c.job_history)
+        c._cleanup()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+        self.check("fixes: cleanup stops jobs no longer reported", proc.returncode is not None)
+
+        # A failing session save is reported once.
+        c = self.make_commander(session_file=os.path.join(tempfile.gettempdir(), "no-such-dir-aic", "s.json"))
+        c.save_session("a")
+        c.save_session("b")
+        warnings = [p for k, p in c.sink.events if k == "LOG" and "Could not save" in p.get("text", "")]
+        self.check("fixes: a failed save is reported once", len(warnings) == 1, repr(warnings))
 
     def test_project_instructions(self):
         import tempfile
@@ -3519,6 +3616,7 @@ def main():
     runner.test_todo_and_task_complete()
     runner.test_todo_reminder()
     runner.test_background_jobs()
+    runner.test_review_fixes()
 
     if not args.skip_live:
         print("\n=== Live integration tests (network) ===")

@@ -202,7 +202,7 @@ panel. In `--nogui` mode a request is required on the command line.
 | `--no-thinking` | Hide thinking tokens from output. |
 | `--timeout` | Command timeout in seconds (default: `120`). |
 | `--max-prompt-len` | Maximum prompt length in tokens (default: `80000`). |
-| `--max-tokens` | Maximum tokens per model reply, thinking included (default: `16000`); also reserved out of `--max-prompt-len`. Raise it if big edits get cut off. |
+| `--max-tokens` | Maximum tokens per model reply, thinking included (default: `16000`, and at most half of `--max-prompt-len`); also reserved out of `--max-prompt-len`. Raise it if big edits get cut off. |
 | `--max-output-bytes` | Maximum output bytes returned from commands (default: `10240`). |
 | `--max-steps` | Maximum number of agent loop steps before stopping (default: `500`). |
 | `--debug` | Dump the full conversation history before every LLM call (see [Debugging](#debugging)). |
@@ -598,7 +598,8 @@ own: a `task_complete` sent alongside other tool calls is refused, so the
 agent has seen their results before it finishes. For models that write it
 instead, a `TASKCOMPLETE` line still ends the run; it only counts on a line of
 its own or at the end of the reply, so "I'll say TASKCOMPLETE once the tests
-pass" does not. With `--verify CMD`, completion is checked by running `CMD`
+pass" does not, and only in a reply without tool calls, so their results are
+seen first. With `--verify CMD`, completion is checked by running `CMD`
 (with the normal timeout and output limits, no approval needed): exit 0
 accepts it; anything else sends the output back to the model as
 `[VERIFY FAILED]` and the run continues.
@@ -698,7 +699,8 @@ reloads it on every startup, so nothing already produced is lost to a crash, a
 - **Where** — `.aicsession` in the current working directory by default;
   override with `--session <path>` or turn persistence off with
   `--no-session`. Because the file lives in the working directory, it stays
-  writable inside the Landlock sandbox.
+  writable inside the Landlock sandbox; a `--session` path the sandbox does not
+  let it write is reported at startup.
 - **When it is written** — after the user request, before every LLM call, right
   after each assistant turn, after every tool result, and again on exit
   (`atexit` plus `SIGTERM`/`SIGHUP` handlers). Writes are atomic
@@ -885,7 +887,7 @@ instructions for the model.
 | `AIC_EXTRA_BODY=0` | Do not send `chat_template_kwargs.enable_thinking` to the endpoint. |
 | `AIC_DEBUG_DUMP_DIR` | Directory for `--debug` dumps (default `~/.aic`). |
 | `NO_COLOR` | Disable colors in `--nogui` mode (they are also off when output is piped). |
-| `AIC_API_BASE`, `AIC_MODEL`, `AIC_API_KEY` | Defaults for `--api-base`, `--model` and `--api-key` (`OPENAI_BASE_URL` and `OPENAI_API_KEY` are also read). `AIC_API_KEY` and `OPENAI_API_KEY` are removed from the environment, so the agent's commands cannot see them (export the key again inside a task that needs it). |
+| `AIC_API_BASE`, `AIC_MODEL`, `AIC_API_KEY` | Defaults for `--api-base`, `--model` and `--api-key` (`OPENAI_BASE_URL` and `OPENAI_API_KEY` are also read). `AIC_API_KEY` and `OPENAI_API_KEY` are removed from the environment, so the agent's commands cannot see them (export the key again inside a task that needs it). On Linux the process is also made non-dumpable, so they cannot read it from `/proc/<pid>/environ` either; this turns off core dumps and attaching a debugger or `py-spy`. |
 
 Endpoints that reject `stream_options` or `extra_body` are detected and the
 request is retried without them automatically; the variables just skip the

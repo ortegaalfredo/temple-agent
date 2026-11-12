@@ -1,6 +1,33 @@
 AI-Commander changelog
 ======================
 
+2.9.1
+-----
+
+- Context compaction no longer cuts between a tool call and its results.
+  The results past the cut were neither kept nor summarized (in a
+  simulation, 15% of compactions with one call per turn, 59% with batched
+  calls); now they go to the summarizer with their call. The note added
+  after a compaction also lists the files changed in the session and the
+  background jobs still running.
+- The API key can no longer be read by the agent's commands from
+  /proc/<pid>/environ (Linux): the process is made non-dumpable, which also
+  turns off core dumps and debugger attach.
+- rg --hostname-bin (which runs a program) is no longer taken as read-only.
+- A TASKCOMPLETE line ends the run only in a reply without tool calls, so
+  the model sees their results first.
+- The reply cap is at most half of --max-prompt-len: a --max-tokens as large
+  as the window left the prompt a budget of 0 and compacted at every step.
+- read_file numbers lines as grep -n and sed -n do (form feeds and other
+  separators no longer start a line) and streams the file instead of
+  loading all of it.
+- A session file that cannot be saved is reported (once) instead of only
+  with --debug, and at startup when the sandbox blocks the --session path.
+- /clear no longer reports the old conversation's background jobs to the
+  new one; jobs still running are stopped when their tab closes and at exit.
+- The command runner and the shell tab prepare the command's environment
+  before forking, so the child only makes system calls.
+
 2.9.0
 -----
 
