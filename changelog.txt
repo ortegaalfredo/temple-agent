@@ -1,5 +1,13 @@
-AI-Commander changelog
+Temple Agent changelog
 ======================
+
+3.0.1
+-----
+
+- AI-Commander is now Temple Agent (repository: github.com/ortegaalfredo/temple-agent;
+  the PyPI package is still aic-agent and the command still aic).
+- The TempleOS skin is the default; --norton gives the Norton Commander one.
+- The README shows the TempleOS skin, next to the Norton Commander one.
 
 3.0.0
 -----
@@ -117,7 +125,7 @@ AI-Commander changelog
 - Independent tool calls can share one turn (they run in order), so tasks
   need fewer round trips to the model.
 - Servers that reject max_tokens or a non-default temperature (OpenAI's
-  GPT-5 and o-series) work: AI-Commander switches to max_completion_tokens
+  GPT-5 and o-series) work: Temple Agent switches to max_completion_tokens
   or stops sending the rejected parameter, without using up a retry.
 - The token estimate is calibrated with the server's prompt_tokens (tool
   schemas included), so context compression starts at the real count.
@@ -130,7 +138,7 @@ AI-Commander changelog
 2.6.1
 -----
 
-- Without --model, AI-Commander asks the server for its models (GET /models)
+- Without --model, Temple Agent asks the server for its models (GET /models)
   and uses the only one, or lets you pick: in the TUI a dialog that filters as
   you type (the model of the resumed session is preselected; Esc quits), with
   --nogui a numbered list. --json, or no terminal to ask on, stops with the
@@ -217,7 +225,7 @@ AI-Commander changelog
 - The working directory carries over between commands: a `cd` persists, the
   model is told when it changed, the file tools resolve relative paths
   against it, and it is saved in the session. --verify still runs where
-  AI-Commander was started.
+  Temple Agent was started.
 - Long command output keeps its start and its end (the last 70%, where
   errors and test summaries are) instead of only the start, and the full
   output is saved to a temporary file named in the cut marker. Commands are
@@ -232,7 +240,7 @@ AI-Commander changelog
   --verify gates it; in --loop mode, objective_complete replaces LOOPCOMPLETE.
 - execute_bash takes background: true for servers, watchers and long builds:
   it returns at once with a log file, and the job's exit code and last lines
-  are reported at the next step. Jobs are killed when AI-Commander exits.
+  are reported at the next step. Jobs are killed when Temple Agent exits.
 - The system prompt no longer claims unlimited thinking tokens.
 - Fix: undoing (Ctrl+Z) a multi-line paste in the prompt no longer crashes
   the TUI (a Textual bug read the cursor mid-undo, before the edit restored
@@ -331,7 +339,7 @@ AI-Commander changelog
 - The shell tab no longer moves the agent: a cd in the shell used to change
   the working directory of the whole process, so a running agent's commands
   and file tools suddenly ran somewhere else. The agent now always works in
-  the directory AI-Commander was started in.
+  the directory Temple Agent was started in.
 
 2.0.0
 -----
@@ -387,7 +395,7 @@ Mouse copy/paste
   pastes. Middle-click pastes. Ctrl+C / Ctrl+V and F4 / F5 also work.
 - Clipboard: copying sets the desktop clipboard directly through libX11 on X11
   and Xwayland desktops such as GNOME (no extra tools needed, and the text
-  stays available after AI-Commander exits), and also uses the terminal's
+  stays available after Temple Agent exits), and also uses the terminal's
   clipboard support (OSC 52) plus xclip/xsel/wl-copy/pbcopy when they're
   installed. --no-mouse hands the mouse back to your terminal.
 

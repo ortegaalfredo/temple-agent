@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """A fake OpenAI-compatible streaming client for offline tests.
 
-AICommander.call_llm_api() drives ``self.client.chat.completions.create(...)``
+TempleAgent.call_llm_api() drives ``self.client.chat.completions.create(...)``
 and iterates the returned stream, reading ``chunk.usage``, ``chunk.choices``
 and ``chunk.choices[0].delta`` (with ``content``, ``reasoning_content``,
 ``thinking`` and ``tool_calls``). This module reproduces that exact surface so

@@ -3,12 +3,12 @@
 
 Two truncation mechanisms are exercised:
 
-1. OUTPUT truncation in AICommander.execute_bash_command(): command output is
+1. OUTPUT truncation in TempleAgent.execute_bash_command(): command output is
    capped at max_output_bytes and the literal sentinel
-   `AICommander.OUTPUT_TRUNCATION_SENTINEL` ("output too long: truncated") is
+   `TempleAgent.OUTPUT_TRUNCATION_SENTINEL` ("output too long: truncated") is
    appended when the limit is exceeded.
 
-2. CONVERSATION-HISTORY compression in AICommander._context_compress():
+2. CONVERSATION-HISTORY compression in TempleAgent._context_compress():
    the trigger (history over the prompt budget) is computed once, then the
    configured compression algorithm (`self.compress_algorithm`, selected via
    the `--compress-alg` CLI flag) is dispatched to. The default algorithm,
@@ -57,7 +57,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import aic
-from aic import AICommander, TUISink
+from aic import TempleAgent, TUISink
 import fake_openai
 
 
@@ -112,7 +112,7 @@ class _StubOpenAI:
     """Minimal stand-in for `openai.OpenAI`.
 
     The system-installed `openai` package in some environments fails to
-    construct (httpx version mismatch), which breaks AICommander.__init__.
+    construct (httpx version mismatch), which breaks TempleAgent.__init__.
     Since offline tests replace the client with a fake before any API call, a
     no-op stub is sufficient here. Live tests can still be run against a real
     endpoint by overriding `aic.OpenAI` before constructing a commander.
@@ -122,7 +122,7 @@ class _StubOpenAI:
         pass
 
 
-# Patch the module-level OpenAI reference so AICommander can be constructed
+# Patch the module-level OpenAI reference so TempleAgent can be constructed
 # without hitting the (possibly broken) real client. `make_fake_commander`
 # replaces `commander.client` with the fake streaming endpoint before use.
 aic.OpenAI = _StubOpenAI
@@ -131,7 +131,7 @@ aic.OpenAI = _StubOpenAI
 class RecordingSink(TUISink):
     """A TUISink that auto-approves and records every emitted event.
 
-    Subclassing TUISink makes AICommander.execute_bash_command() treat this as
+    Subclassing TUISink makes TempleAgent.execute_bash_command() treat this as
     a TUI sink, so it skips stdin monitoring and can run headless. Every
     emitted event is appended to self.events as (kind, payload) tuples, and
     auto_approve answers every approval with "y", so the gate never blocks.
@@ -164,7 +164,7 @@ class TestRunner:
         return passed
 
     def make_commander(self, **overrides):
-        """Build an AICommander wired to a fresh RecordingSink.
+        """Build an TempleAgent wired to a fresh RecordingSink.
 
         Overrides let individual tests shrink max_output_bytes / max_prompt_len
         or bound the agent loop without sharing state between tests.
@@ -193,10 +193,10 @@ class TestRunner:
             max_steps=500,
         )
         params.update(overrides)
-        return AICommander(**params)
+        return TempleAgent(**params)
 
     def make_fake_commander(self, script=None, **overrides):
-        """Build an AICommander whose LLM client is a fake streaming endpoint.
+        """Build an TempleAgent whose LLM client is a fake streaming endpoint.
 
         The real OpenAI client is replaced with a FakeOpenAIClient so
         call_llm_api() runs entirely offline. `script` is a list of FakeChunk
@@ -831,7 +831,7 @@ class TestRunner:
         # Each call: content then exact usage. The first call returns plain
         # content (no completion marker), so the loop continues; the second call
         # returns the completion marker to end the loop.
-        marker = AICommander.COMPLETION_MARKER
+        marker = TempleAgent.COMPLETION_MARKER
         script = [
             [
                 fake_openai.content_chunk("pong"),
@@ -1126,7 +1126,7 @@ class TestRunner:
     # ------------------------------------------------------------------ #
 
     def _session_commander(self, tmpdir, name=".aicsession", **overrides):
-        """AICommander wired to a session file inside a throwaway directory."""
+        """TempleAgent wired to a session file inside a throwaway directory."""
         path = os.path.join(tmpdir, name)
         c = self.make_commander(session_file=path, **overrides)
         return c, path
@@ -2362,7 +2362,7 @@ class TestRunner:
                    event["kind"] == "QUESTION" and event["payload"]["text"] == "why?" and got == ["because"])
         sink.stop_event.set()
         self.check("ask: a stopped run gets no answer", sink.ask("again?") == "")
-        prompts = (c.get_system_prompt(), aic.AICommander.get_fast_system_prompt(c))
+        prompts = (c.get_system_prompt(), aic.TempleAgent.get_fast_system_prompt(c))
         self.check("prompt: independent calls may share a turn",
                    all("one call at a time" not in p and "Independent calls" in p for p in prompts))
 
@@ -2737,7 +2737,7 @@ class TestRunner:
                 shown = console.export_text()
                 r["F3 goes on to Help: version, home page, tutorial, keys and options"] = (
                     tab.pane == "help" and tab.help.display and not tab.console_log.display
-                    and f"AI-Commander {aic.__version__}" in shown and aic._REPO_URL in shown
+                    and f"Temple Agent {aic.__version__}" in shown and aic._REPO_URL in shown
                     and "Getting started" in shown and "/closetab" in shown and "--auto-approve" in shown)
                 r["Help scrolls"] = tab.help.max_scroll_y > 0
                 opened = []
@@ -3232,11 +3232,11 @@ class TestRunner:
                    f"status={status} calls={len(fake.calls)}")
         self.check("finish: the summary is shown and replayable",
                    any(e[0] == "LOG" and e[1]["text"] == "All done." for e in c.sink.events)
-                   and AICommander.finish_summary(c.conversation_history[-2]) == "All done.")
+                   and TempleAgent.finish_summary(c.conversation_history[-2]) == "All done.")
         self.check("todo: saved in the session", c.session_snapshot()["todos"] == c.todos)
         r = c._todo({"items": json.dumps([{"text": "x", "status": "done"}])})
         self.check("todo: a list sent as JSON text is accepted", c.todos == [{"text": "x", "status": "done"}], r)
-        c.todos = AICommander.normalize_todos([{"text": "a", "status": "completed"},
+        c.todos = TempleAgent.normalize_todos([{"text": "a", "status": "completed"},
                                                {"text": "b", "status": "In-Progress"}, {"text": "c", "status": ["odd"]}])
         self.check("todo: status spellings normalized", [t["status"] for t in c.todos]
                    == ["done", "in_progress", "pending"], repr(c.todos))
@@ -3503,7 +3503,7 @@ def main():
         description="Test the truncation feature and core functionality of aic.py"
     )
     # Credentials are only needed for the live (network) tests. The offline
-    # unit tests construct an AICommander but never connect, so placeholders
+    # unit tests construct an TempleAgent but never connect, so placeholders
     # are fine unless live tests are requested.
     parser.add_argument("--api-base", default="http://localhost:8001/v1",
                         help="OpenAI-compatible API base URL (only needed for live tests)")

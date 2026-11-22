@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
-"""AI-Commander: a ralph-loop AI agent that gives an LLM shell access through
+"""Temple Agent: a ralph-loop AI agent that gives an LLM shell access through
 function calling.
 
-One agent core (AICommander) drives two front-ends through an EventSink: the
+One agent core (TempleAgent) drives two front-ends through an EventSink: the
 default Textual TUI (TUISink), where every tab is an independent agent, and a
 plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "3.0.0"
+__version__ = "3.0.1"
 
 import argparse
 import asyncio
@@ -176,7 +176,7 @@ def _check_openai_version() -> None:
     except (PackageNotFoundError, ValueError):
         return
     if major < 2:
-        sys.exit(f"ERROR: AI-Commander requires openai>=2.0.0 but found {installed}. "
+        sys.exit(f"ERROR: Temple Agent requires openai>=2.0.0 but found {installed}. "
                  "Upgrade with: pip install --upgrade 'openai>=2.0.0'")
 
 
@@ -758,7 +758,7 @@ def read_session_file(path: str) -> tuple[dict | None, str | None]:
 _RUN_IT = "Run it? [y]es / [n]o / or type a suggestion: "
 
 class EventSink:
-    """Presentation-layer I/O for AICommander.
+    """Presentation-layer I/O for TempleAgent.
 
     Event kinds: LOG, ERROR, USER_REQUEST, LLM_STREAM, THINKING_STREAM,
     CONSOLE_STREAM (internal calls such as the summarizer), LLM_MESSAGE (a
@@ -832,7 +832,7 @@ class ConsoleSink(EventSink):
                 self._line(f"[USER REQUEST] {text}", colors.BOLD + colors.YELLOW)
                 self._line("=" * 60)
             elif kind == "CMD_EXEC":
-                self._line(AICommander.command_label(payload.get("function_name"), payload.get("command", "")),
+                self._line(TempleAgent.command_label(payload.get("function_name"), payload.get("command", "")),
                            colors.BOLD + colors.YELLOW)
             elif kind == "CMD_COMPLETE":
                 self._line(f"[exit {payload.get('exit_code')}]", colors.BOLD)
@@ -841,9 +841,9 @@ class ConsoleSink(EventSink):
                 self._line(f"todo · {sum(t['status'] == 'done' for t in items)}/{len(items)} done",
                            colors.BOLD + colors.YELLOW)
                 for t in items:
-                    self._line(f"  {AICommander._TODO_MARKS[t['status']]} {t['text']}")
+                    self._line(f"  {TempleAgent._TODO_MARKS[t['status']]} {t['text']}")
             elif kind == "SYSTEM":
-                self._line(f"[AI-COMMANDER STARTED] model={payload.get('model')} "
+                self._line(f"[TEMPLE-AGENT STARTED] model={payload.get('model')} "
                            f"api={payload.get('api_base')}", colors.BOLD + colors.BLUE)
             elif kind == "SHUTDOWN" and payload.get("completed"):
                 self._line("[TASK COMPLETE]", colors.BOLD + colors.GREEN)
@@ -966,7 +966,7 @@ class CommandTimeoutError(Exception):
 
 # --- The agent ----------------------------------------------------------------
 
-class AICommander:
+class TempleAgent:
     """The agent: conversation state, streaming LLM calls, command execution,
     context compression and session persistence. All I/O goes to ``self.sink``."""
 
@@ -1339,7 +1339,7 @@ class AICommander:
                 fn = (tc.get("function") or {}).get("name") or "unknown function"
                 cleaned.append(self._tool_result(
                     tcid, f"[SESSION RECOVERED] This tool call ({fn}) was issued in a previous "
-                          f"AI-Commander session that ended before its result was recorded, so it was "
+                          f"Temple Agent session that ended before its result was recorded, so it was "
                           f"NOT re-executed. Do not assume it had any effect; verify the current state "
                           f"before retrying it."))
                 notes.append(f"closed an unanswered tool call ({fn})")
@@ -1641,7 +1641,7 @@ Remember to not exceed 5000 characters, its very important that the summary to b
         # contains no user message. (The agent's full system prompt is not
         # needed for that and would only add prefill.)
         first_user = next((m for m in self.conversation_history if m.get("role") == "user"), None)
-        prompt += ("\n\nCONTEXT: the conversation is an autonomous agent (AI-Commander) carrying out the "
+        prompt += ("\n\nCONTEXT: the conversation is an autonomous agent (Temple Agent) carrying out the "
                    "user's task with shell and file tools.")
         if first_user is not None:
             prompt += ("\n\nORIGINAL FIRST USER COMMAND (the primary objective the agent was initially asked "
@@ -3148,7 +3148,7 @@ Rules:
         (the --loop marker), "max_steps", "stopped" or "error"."""
         if not self._started_banner_shown:
             self._started_banner_shown = True
-            self.sink.emit("SYSTEM", {"text": "[AI-COMMANDER STARTED]", "api_base": self.base_url,
+            self.sink.emit("SYSTEM", {"text": "[TEMPLE-AGENT STARTED]", "api_base": self.base_url,
                                       "model": self.model, "auto_approve": self.auto_approve,
                                       "max_prompt_len": self.max_prompt_len,
                                       "compress_algorithm": self.compress_algorithm, "fast": self.fast})
@@ -3413,7 +3413,7 @@ if _TEXTUAL_AVAILABLE:
         if args is None:
             return None
         name = (tool_call.get("function") or {}).get("name")
-        if name in AICommander.AGENT_TOOLS:
+        if name in TempleAgent.AGENT_TOOLS:
             return name
         if isinstance(args.get("path"), str):
             return f"{name} {args['path']}"
@@ -4866,7 +4866,7 @@ if _TEXTUAL_AVAILABLE:
             line.truncate(width, overflow="ellipsis")
         return Text("\n").join(lines)
 
-    def _prompt_messages(agent: AICommander) -> list[dict]:
+    def _prompt_messages(agent: TempleAgent) -> list[dict]:
         """The messages the model gets with the next call (as if a message followed a final reply)."""
         hist = list(agent.conversation_history)
         return agent._validate_messages(hist + [{"role": "user", "content": ""}])[:-1] if hist else []
@@ -4944,7 +4944,7 @@ if _TEXTUAL_AVAILABLE:
             """(path, change, (added, removed, label)) of every file that still differs."""
             rows = []
             for path, change in list(self.tab.agent.changes.items()):
-                stat = AICommander._stat(path)
+                stat = TempleAgent._stat(path)
                 cached = self._measured.get(path)
                 if not cached or cached[0] != stat:
                     cached = self._measured[path] = (stat, self._measure(change["before"], path))
@@ -4955,7 +4955,7 @@ if _TEXTUAL_AVAILABLE:
         @staticmethod
         def _measure(before, path: str) -> tuple | None:
             """(added, removed, label) of a change; None when the file is as it was."""
-            after = AICommander.file_snapshot(path)
+            after = TempleAgent.file_snapshot(path)
             if after == before:
                 return None
             label = "new" if before is None else "deleted" if after is None else ""
@@ -5009,7 +5009,7 @@ if _TEXTUAL_AVAILABLE:
                 log.display = False
             elif leaf:
                 log.styles.margin = (0, 0, 0, 2 * leaf[0] + 3)  # under the file's name
-            if leaf and self._leaf_stat != AICommander._stat(self._leaf):  # just opened, or changed again
+            if leaf and self._leaf_stat != TempleAgent._stat(self._leaf):  # just opened, or changed again
                 opening, height = self._leaf_stat is False, self._fill_diff(self._leaf, width - 2 * leaf[0] - 7)
                 if self.diff_path:  # (once laid out, so that its first frame is not lost)
                     self.call_after_refresh(log.styles.animate, "height", height, duration=0.2, easing="out_cubic",
@@ -5054,7 +5054,7 @@ if _TEXTUAL_AVAILABLE:
             """Write *path*'s diff into the leaf; returns the leaf's height: its rows
             wrapped at *room* cells, at most 2/3 of the changes area (the next rows stay in sight)."""
             log, before = self.query_one(".diff", OutputLog), self.tab.agent.changes[path]["before"]
-            after, self._leaf_stat = AICommander.file_snapshot(path), AICommander._stat(path)
+            after, self._leaf_stat = TempleAgent.file_snapshot(path), TempleAgent._stat(path)
             if before is False or after is False:
                 lines = [("Binary, unreadable or larger than 1 MB: no diff to show.", _C_DIM)]
             else:
@@ -5229,7 +5229,7 @@ if _TEXTUAL_AVAILABLE:
         _ROLE_STYLES = {"system": "bold #af87ff", "user": "bold #ffff5f", "assistant": "bold #87d7ff",
                         "tool": "bold #5fd787"}
 
-        def __init__(self, agent: AICommander):
+        def __init__(self, agent: TempleAgent):
             super().__init__()
             self.agent = agent
 
@@ -5511,7 +5511,7 @@ if _TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="approval"):
-                file_tool = self.command.partition(" ")[0] in AICommander.FILE_TOOLS
+                file_tool = self.command.partition(" ")[0] in TempleAgent.FILE_TOOLS
                 yield Static(Text("The agent wants to " + ("use a file tool:" if file_tool else "run this command:"),
                                   style="bold #ffd75f"))
                 with VerticalScroll(id="approval-cmd"):
@@ -5543,7 +5543,7 @@ if _TEXTUAL_AVAILABLE:
                 self.dismiss(None if self._retired else ("suggest", event.value.strip()))
 
     class QuitScreen(ModalScreen):
-        """Quit AI-Commander? y, Enter or the quit key again quits; n or Esc stays.
+        """Quit Temple Agent? y, Enter or the quit key again quits; n or Esc stays.
         y and Enter are ignored for a moment after it opens (typing meant for the prompt)."""
 
         CSS = """
@@ -5562,7 +5562,7 @@ if _TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             with Vertical(id="quit"):
-                text = Text().append("Quit AI-Commander?\n", "bold #ffd75f")
+                text = Text().append("Quit Temple Agent?\n", "bold #ffd75f")
                 if self.running:
                     text.append(f"{self.running} agent{'s' * (self.running != 1)} still running will be stopped. ",
                                 "#ff8787")
@@ -5796,9 +5796,9 @@ if _TEXTUAL_AVAILABLE:
                 yield Static(Text("Esc closes this help.", style=_C_DIM))
 
         def on_mount(self) -> None:
-            self.query_one("#help").border_title = f"AI-Commander {__version__}"
+            self.query_one("#help").border_title = f"Temple Agent {__version__}"
 
-    _REPO_URL = "https://github.com/ortegaalfredo/AICommander"
+    _REPO_URL = "https://github.com/ortegaalfredo/temple-agent"
     _TUTORIAL = (
         "Type a task in the prompt and press Enter: the agent plans it, runs commands and edits files "
         "until it is done, and says so.",
@@ -5821,7 +5821,7 @@ if _TEXTUAL_AVAILABLE:
 
         def compose(self) -> ComposeResult:
             head = _C_ANSWER
-            yield Static(Text("AI-Commander ", style="bold #ffff5f").append(__version__, "bold #ffffff"))
+            yield Static(Text("Temple Agent ", style="bold #ffff5f").append(__version__, "bold #ffffff"))
             yield Static(Text(_REPO_URL, "underline #87d7ff").append("  (a click opens it)", _C_DIM), classes="url")
             yield Static("")
             steps = Table.grid(padding=(0, 1))
@@ -5853,7 +5853,7 @@ if _TEXTUAL_AVAILABLE:
                     if action.option_strings and action.help != argparse.SUPPRESS]
 
     class AgentTab:
-        """One agent of the TUI: its AICommander (own session file, lock, queue
+        """One agent of the TUI: its TempleAgent (own session file, lock, queue
         and thread), its panes (agent log, console, shell) and run state. Its
         events render into its own panes whether or not it is on screen."""
 
@@ -5956,7 +5956,7 @@ if _TEXTUAL_AVAILABLE:
             """Greeting lines and the restored session (the panes are mounted)."""
             a, log = self.args, self.agent_log
             log.border_title = "Agent"
-            log.write_line(f"AI-Commander {__version__} · model {a.model} · {a.api_base}", _C_DIM)
+            log.write_line(f"Temple Agent {__version__} · model {a.model} · {a.api_base}", _C_DIM)
             log.write_line(a.sandbox_msg, _C_OK if a.sandbox_enabled else _C_FAIL)
             log.write_line(self.session_msg, _C_OK if self.session_file and "WARNING" not in self.session_msg
                            else "#ffd75f")
@@ -5995,19 +5995,19 @@ if _TEXTUAL_AVAILABLE:
                             log.write_rule("You", _C_DIM)
                             log.write_line(text, _C_USER)
                     elif role == "assistant":
-                        text = text.replace(AICommander.COMPLETION_MARKER, "").rstrip()
-                        for line in (text, AICommander.finish_summary(msg)):
+                        text = text.replace(TempleAgent.COMPLETION_MARKER, "").rstrip()
+                        for line in (text, TempleAgent.finish_summary(msg)):
                             if line:
                                 self.write_answer(line)
                         for tc in msg.get("tool_calls") or []:
                             name, result = (tc.get("function") or {}).get("name"), results.get(tc.get("id"))
                             if name == "todo":  # the folded list, as when it ran
-                                todos = AICommander.normalize_todos((_call_args(tc) or {}).get("items"))
+                                todos = TempleAgent.normalize_todos((_call_args(tc) or {}).get("items"))
                                 if todos:
                                     self.write_todos(todos)
                                 continue
                             command, match = _tool_command(tc), _RESULT_RE.match(result or "")
-                            label = AICommander.command_label(name, command) if command else "tool result"
+                            label = TempleAgent.command_label(name, command) if command else "tool result"
                             output = match.group(2) if match else result or ""
                             ok = match is not None and match.group(1) == "0"
                             if command:
@@ -6051,7 +6051,7 @@ if _TEXTUAL_AVAILABLE:
             title = f"todo · {sum(t['status'] == 'done' for t in todos)}/{len(todos)} done"
             log.begin_fold(title, _C_CMD) if fold else log.write_line(title, _C_CMD)
             for t in todos:
-                log.write_line(f"  {AICommander._TODO_MARKS[t['status']]} {t['text']}",
+                log.write_line(f"  {TempleAgent._TODO_MARKS[t['status']]} {t['text']}",
                                {"done": _C_DIM, "in_progress": f"bold {_C_ANSWER}"}.get(t["status"], "#c8d0e0"))
             if fold:
                 log.end_fold()
@@ -6231,7 +6231,7 @@ if _TEXTUAL_AVAILABLE:
                     self.write_todos(p["items"])
             elif kind == "CMD_EXEC":
                 self.current_command, self._cmd_started = p.get("command", ""), time.monotonic()
-                label = AICommander.command_label(p.get("function_name"), self.current_command)
+                label = TempleAgent.command_label(p.get("function_name"), self.current_command)
                 self._begin_command(label)
                 _fold_command(console, label)
                 self.cmd_tail = ""
@@ -6351,7 +6351,7 @@ if _TEXTUAL_AVAILABLE:
 
         def _filter_marker(self, text: str) -> str:
             """Hide the completion marker, even when it arrives split across chunks."""
-            marker = AICommander.COMPLETION_MARKER
+            marker = TempleAgent.COMPLETION_MARKER
             buf = (self._marker_hold + text).replace(marker, "")
             hold = next((k for k in range(min(len(marker) - 1, len(buf)), 0, -1) if marker.startswith(buf[-k:])), 0)
             self._marker_hold = buf[len(buf) - hold:] if hold else ""
@@ -6475,7 +6475,7 @@ if _TEXTUAL_AVAILABLE:
 
         # The current tab's parts.
         @property
-        def agent(self) -> AICommander | None:
+        def agent(self) -> TempleAgent | None:
             return self.tab.agent if self.tab else None
 
         @property
@@ -6491,7 +6491,7 @@ if _TEXTUAL_AVAILABLE:
             return self.query_one("#prompt-input", PromptArea)
 
         async def on_mount(self) -> None:
-            self.title = "AI-Commander"
+            self.title = "Temple Agent"
             self.prompt.border_title = "Prompt"
             self._tabs_bar = self.query_one("#agent-tabs", AgentTabs)
             self._status_bar = self.query_one("#status-bar", Static)
@@ -6976,9 +6976,9 @@ if _TEXTUAL_AVAILABLE:
 
         def _last_answer(self) -> str:
             for msg in reversed(self.agent.conversation_history if self.agent else []):
-                text = _content_text(msg.get("content")).replace(AICommander.COMPLETION_MARKER, "").strip()
-                if msg.get("role") == "assistant" and (text or AICommander.finish_summary(msg)):
-                    return text or AICommander.finish_summary(msg)
+                text = _content_text(msg.get("content")).replace(TempleAgent.COMPLETION_MARKER, "").strip()
+                if msg.get("role") == "assistant" and (text or TempleAgent.finish_summary(msg)):
+                    return text or TempleAgent.finish_summary(msg)
             return ""
 
         def _copy_answer(self) -> None:
@@ -7196,7 +7196,7 @@ if _TEXTUAL_AVAILABLE:
             self.history.close()
             self.exit()
 
-    # TempleOS skin (--templeos) -----------------------------------------------------
+    # TempleOS skin (the default; --norton runs CommanderApp's own) -----------------------------------------------------
     # The 16 TempleOS colors, by index: BLACK BLUE GREEN CYAN RED PURPLE BROWN LTGRAY
     # DKGRAY LTBLUE LTGREEN LTCYAN LTRED LTPURPLE YELLOW WHITE.
     _TOS_HEX = ("000000", "0000aa", "00aa00", "00aaaa", "aa0000", "aa00aa", "aa5500", "aaaaaa",
@@ -7205,9 +7205,9 @@ if _TEXTUAL_AVAILABLE:
     # pass (the screen under a pop-up is filtered again) recognizes and keeps it.
     _TOS_OUT = {"%s%02x" % (h[:4], int(h[4:], 16) ^ 1): i for i, h in enumerate(_TOS_HEX)}
     _TOS_DARK = {0, 1, 2, 3, 4, 5, 6, 8, 9}  # backgrounds that take the light variant of a text color
-    # AI-Commander's own colors as backgrounds, and as text color families (dark, light variant).
+    # Temple Agent's own colors as backgrounds, and as text color families (dark, light variant).
     # Markers (matched loosely: a pop-up dims the screen under it a little): #140000 is a true black, as
-    # AI-Commander's #000000 turns white, #000014 border lines are black on light blue and #001400 is a
+    # Temple Agent's #000000 turns white, #000014 border lines are black on light blue and #001400 is a
     # blinking black.
     _TOS_BG = {"12488b": 15, "0b2f5e": 15, "123f78": 15, "1d5a9e": 15, "000000": 15, "06989a": 9,
                "5fd7ff": 3, "5fd787": 2, "af0000": 4, "87d7ff": 14, "ffd75f": 14, "1f5fa8": 7, "8a6d1f": 6}
@@ -7217,7 +7217,7 @@ if _TEXTUAL_AVAILABLE:
                **dict.fromkeys(("b2b28a", "8fa8cc", "6f8fc0", "8a9bb8", "4f74b3", "8fb3e0"), "gray"),
                **dict.fromkeys(("ffd7af", "d7af5f", "8a6d1f"), "yellow"),
                "ffff5f": "green", "ffd75f": "purple", "87d7ff": "blue", "5fd7ff": "cyan"}
-    _TOS_BLINK = {"ff8787", "ff5f5f", "af0000"}  # AI-Commander's warning reds: they blink, as in TempleOS
+    _TOS_BLINK = {"ff8787", "ff5f5f", "af0000"}  # Temple Agent's warning reds: they blink, as in TempleOS
 
     class _TosBlink:
         """The blink phase, the widget being painted and the widgets painted with blinking text."""
@@ -7402,7 +7402,7 @@ if _TEXTUAL_AVAILABLE:
     """
 
     class TempleApp(CommanderApp):
-        """AI-Commander in TempleOS clothes (--templeos): white windows with blue
+        """Temple Agent in TempleOS clothes (the default look): white windows with blue
         text in double-line borders (black on light blue), grey pop-ups, and the status
         line on top (WHITE on BLUE) led by the date and time, as TempleOS draws it."""
 
@@ -7515,9 +7515,9 @@ def _ask_model(models: list[str], preferred: str = "") -> str:
             return answer or preferred
 
 
-def agent_from_args(args, sink: EventSink, **settings) -> AICommander:
+def agent_from_args(args, sink: EventSink, **settings) -> TempleAgent:
     """An agent configured by the command line (a TUI tab, or the --nogui run)."""
-    agent = AICommander(
+    agent = TempleAgent(
         api_base=args.api_base, model=args.model, api_key=args.api_key, auto_approve=args.auto_approve,
         show_thinking=not args.no_thinking, command_timeout=args.timeout, max_prompt_len=args.max_prompt_len,
         max_output_bytes=args.max_output_bytes, debug=args.debug, sink=sink, max_steps=args.max_steps,
@@ -7541,7 +7541,7 @@ def _on_signals(handler) -> None:
 def build_parser() -> argparse.ArgumentParser:
     """The command line (also listed on the TUI's Help tab)."""
     parser = argparse.ArgumentParser(
-        description="AI-Commander - a ralph-loop AI agent",
+        description="Temple Agent - a ralph-loop AI agent",
         epilog="--nogui exit status: 0 task complete, 1 error, 2 step/iteration limit reached, 130 stopped.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--api-base", default=os.environ.get("AIC_API_BASE") or os.environ.get("OPENAI_BASE_URL"),
@@ -7576,9 +7576,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--no-mouse", action="store_true",
                         help="TUI without mouse support, leaving selection and paste to the terminal")
     look = parser.add_mutually_exclusive_group()
-    look.add_argument("--norton", action="store_true", help="Norton Commander look: blue panels (the default)")
     look.add_argument("--templeos", action="store_true",
-                      help="TempleOS look: white windows, blue text, grey pop-ups, status line on top")
+                      help="TempleOS look: white windows, blue text, grey pop-ups, status line on top (the default)")
+    look.add_argument("--norton", action="store_true", help="Norton Commander look: blue panels")
     parser.add_argument("--no-markdown", action="store_true",
                         help="TUI: show the agent's replies as they come, without rendering their markdown "
                              "(headings, emphasis, lists, code blocks, tables)")
@@ -7663,7 +7663,7 @@ def main():
         if not args.session_file:
             args.session_msg = "[SESSION] WARNING: could not lock a session file; running without persistence"
         elif args.instance_number > 1:
-            args.session_msg = (f"[SESSION] WARNING: another AI-Commander instance is already using "
+            args.session_msg = (f"[SESSION] WARNING: another Temple Agent instance is already using "
                                 f"{_SESSION_BASENAME} in this directory; this instance uses "
                                 f"{os.path.basename(args.session_file)} (instance {args.instance_number})")
         else:
@@ -7710,7 +7710,7 @@ def main():
             status = (commander.run_loop(os.path.abspath(args.loop), args.max_iterations) if args.loop
                       else commander.run(" ".join(args.request)))
         except KeyboardInterrupt:
-            commander._log("[INTERRUPTED] AI-Commander stopped by user")
+            commander._log("[INTERRUPTED] Temple Agent stopped by user")
             commander.save_session("interrupted")
             sys.exit(130)
         except Exception:
@@ -7718,7 +7718,7 @@ def main():
             sys.exit(1)
         sys.exit(_EXIT_CODES.get(status, 1))
 
-    app = (TempleApp if args.templeos else CommanderApp)(args, history)
+    app = (CommanderApp if args.norton else TempleApp)(args, history)
 
     def on_signal(signum, _frame):
         app.save_sessions(f"signal_{signum}")

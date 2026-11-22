@@ -1,4 +1,4 @@
-# Dependencies for AI-Commander
+# Dependencies for Temple Agent
 #
 # Note: textual pulls in `rich` transitively, which the TUI code imports
 # directly (from rich.text import Text), so rich is not listed separately.

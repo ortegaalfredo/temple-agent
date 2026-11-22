@@ -1,8 +1,8 @@
-# AI-Commander
+# Temple Agent
 
 **PyPI package:** [`aic-agent`](https://pypi.org/project/aic-agent/) — install with `pip install aic-agent` (the command is `aic`).
 
-AI-Commander is a **ralph-loop AI agent** that provides shell access and task
+Temple Agent is a **ralph-loop AI agent** that provides shell access and task
 planning capabilities to Large Language Models through function calling. It
 runs a tight agent loop: it plans, executes shell commands, observes the
 results, and iterates until the requested task is complete — all while you stay
@@ -11,13 +11,17 @@ in control through an approval gate.
 It supports two presentation modes:
 
 - **Default (TUI)** — a [Textual](https://textual.textualize.io/)-based,
-  Norton-Commander-style terminal UI (`--templeos` for a TempleOS one): an agent pane and a Status/Shell/Tools pane, a
+  TempleOS-style terminal UI (`--norton` for a Norton Commander one): an agent pane and a Status/Shell/Tools pane, a
   multi-line prompt, a status line and a function-key bar, with full mouse
   support (select to copy, right/middle-click to paste, resizable panes,
   foldable output, clickable links) and `Ctrl+F` search.
 - **`--nogui`** — the original direct-CLI behaviour (stdout/stderr, no TUI).
 
-![AI-Commander TUI](aic.png)
+![Temple Agent TUI in the default TempleOS skin](aic-templeos.png)
+
+A similar session in the Norton Commander skin (`--norton`):
+
+![Temple Agent TUI in the Norton Commander skin](aic.png)
 
 ---
 
@@ -140,8 +144,8 @@ pip install --upgrade aic-agent
 ### From a checkout of this repository
 
 ```bash
-git clone https://github.com/ortegaalfredo/AICommander
-cd AICommander
+git clone https://github.com/ortegaalfredo/temple-agent
+cd temple-agent
 python3 -m venv venv
 source venv/bin/activate
 pip install .
@@ -166,7 +170,7 @@ python3 aic.py ...
 
 ## Usage
 
-AI-Commander is a single-file script. Run it from the repository root with
+Temple Agent is a single-file script. Run it from the repository root with
 `python3 aic.py`, or use the `aic` command installed by the
 [`aic-agent`](https://pypi.org/project/aic-agent/) package:
 
@@ -194,7 +198,7 @@ panel. In `--nogui` mode a request is required on the command line.
 | Option | Description |
 | ------ | ----------- |
 | `--api-base` | API base URL (required; default `$AIC_API_BASE` or `$OPENAI_BASE_URL`). |
-| `--model` | Model name (default `$AIC_MODEL`). Without one, AI-Commander asks the server for its models (`GET /models`): it uses the only one, or lets you pick — in a dialog that filters as you type (the model of the session it resumes is preselected), or by number with `--nogui`. |
+| `--model` | Model name (default `$AIC_MODEL`). Without one, Temple Agent asks the server for its models (`GET /models`): it uses the only one, or lets you pick — in a dialog that filters as you type (the model of the session it resumes is preselected), or by number with `--nogui`. |
 | `--api-key` | API key (required; default `$AIC_API_KEY` or `$OPENAI_API_KEY`). Prefer the variables: a key on the command line is visible to every process, the agent's own commands included. |
 | `--auto-approve` | Auto-approve command execution (for testing). |
 | `--confirm-reads` | Ask before read-only commands and `read_file` too (by default they run without asking). |
@@ -209,8 +213,8 @@ panel. In `--nogui` mode a request is required on the command line.
 | `--nogui` | Run in direct CLI mode without TUI (original behaviour). No session file is read or written unless `--session` is given. |
 | `--no-mouse` | TUI without mouse capture, leaving selection and paste to the terminal itself. |
 | `--no-markdown` | Show the agent's replies raw in the TUI, without rendering their markdown (headings, emphasis, lists, code blocks, tables). |
-| `--norton` | Norton Commander look for the TUI: blue panels, status line at the bottom (the default). |
-| `--templeos` | TempleOS look for the TUI: white windows with blue text in double-line borders, grey pop-ups, the status line on top (WHITE on BLUE, led by the date and time), a black/yellow blinking cursor, blinking red warnings, scrolling tab titles and each pane's name down its left border. Only the look changes. |
+| `--templeos` | TempleOS look for the TUI (the default): white windows with blue text in double-line borders, grey pop-ups, the status line on top (WHITE on BLUE, led by the date and time), a black/yellow blinking cursor, blinking red warnings, scrolling tab titles and each pane's name down its left border. |
+| `--norton` | Norton Commander look for the TUI: blue panels, status line at the bottom. Only the look changes. |
 | `--session` | Session file mirroring the conversation history (default: `./.aicsession`). |
 | `--no-session` | Disable session persistence (nothing is written or loaded). |
 | `--disable-sandbox` | Disable the OS-level Landlock sandbox (Linux only). |
@@ -277,7 +281,7 @@ The model's thinking (`reasoning_content`) is sent back with its turns for the
 rest of the current task ("preserved thinking"), as interleaved-thinking models
 such as GLM and DeepSeek expect; without it they see their earlier turns with
 empty thinking and progressively stop thinking. It is cleared when you send a
-new request, and if an endpoint refuses it, AI-Commander retries without it
+new request, and if an endpoint refuses it, Temple Agent retries without it
 and stops sending it for the session.
 
 The agent has six tools. `read_file`, `edit_file` (exact string
@@ -300,7 +304,7 @@ the command a real terminal environment (so interactive tools and
 timeout, and kill the whole process group when needed. The working directory
 carries over between calls: a `cd` persists (shell variables and `export`s do
 not), relative paths in the file tools resolve against it, and it is saved in
-the session. `--verify` always runs where AI-Commander was started.
+the session. `--verify` always runs where Temple Agent was started.
 
 Output is streamed live to the console panel. Past `--max-output-bytes` the
 result keeps the first 30% and the last 70%, cut at whole lines, with a marker
@@ -311,7 +315,7 @@ naming a temporary file that holds the full output, and the literal sentinel
 With `background: true`, `execute_bash` starts the command in the background
 and returns at once with its pid and log file; when the job exits, its exit
 code and last lines are reported to the agent at its next step. Jobs still
-running when AI-Commander exits are killed, and the temporary files (saved
+running when Temple Agent exits are killed, and the temporary files (saved
 outputs, job logs) are removed.
 
 ---
@@ -320,8 +324,8 @@ outputs, job logs) are removed.
 
 ### Layout
 
-The default Textual interface is a Norton-Commander-style split screen
-(`--templeos` gives it TempleOS colors):
+The default Textual interface is a split screen in TempleOS colors (`--norton`
+gives it Norton Commander's):
 
 - **Agent tabs**: the strip above the left pane has one tab per agent; `+`
   (or `Ctrl+T`) opens another. Every tab is an independent agent with its own
@@ -381,7 +385,7 @@ The default Textual interface is a Norton-Commander-style split screen
   command completes, and so does a session summary (click to unfold).
   *Shell* is an embedded, colored interactive shell with scrollback. It
   is independent of the agent: a `cd` there never changes the directory the
-  agent works in, which stays the one AI-Commander was started in.
+  agent works in, which stays the one Temple Agent was started in.
   *Help* shows the version and the project's home page, a short tutorial,
   the keys, mouse and commands (as `F1` does) and the command-line options;
   it scrolls.
@@ -414,7 +418,7 @@ controls, so they are **not** added to prompt history:
 | `/autoapprove` | `/aa` | Toggle auto-approve on/off (same as `F2`). When ON, commands run without asking. |
 | `/clear` | `/new` | Clear the conversation history and start a fresh session (resets tokens, step count, and session id). The session file is emptied too, so nothing is resurrected on the next startup. A running agent is stopped first. |
 | `/session` | — | Show the session file, session id, instance number, and what is currently saved on disk. |
-| `/reload` | — | Re-read the session file, picking up edits made to its `messages` array outside AI-Commander (requires a stopped agent). |
+| `/reload` | — | Re-read the session file, picking up edits made to its `messages` array outside Temple Agent (requires a stopped agent). |
 | `/copy` | — | Copy the agent's last answer to the clipboard. |
 | `/todo` | — | Print the agent's task list (its progress is always in the agent pane's bottom border). |
 | `/loop [file]` | — | Start a [ralph loop](#ralph-loop-mode) over a prompt file (default `PROMPT.md`), up to `--max-iterations`. |
@@ -471,13 +475,13 @@ use `F6` or the mouse to leave it.
   `F4` copies the selection or the last answer, `F5` pastes. Your terminal's
   own paste (e.g. `Ctrl+Shift+V`) works too, including multi-line text.
 - Copies go to the desktop clipboard: on X11 (and Wayland desktops with
-  Xwayland, such as GNOME) AI-Commander sets it directly through `libX11`, so
-  no extra tools are needed — the text stays available after AI-Commander exits,
+  Xwayland, such as GNOME) Temple Agent sets it directly through `libX11`, so
+  no extra tools are needed — the text stays available after Temple Agent exits,
   until something else is copied, and middle-click pastes it in other apps too.
   `wl-copy`, `xclip`, `xsel`, `pbcopy` or `clip.exe` are used when installed,
   and OSC 52 covers terminals that support it (also over SSH and in tmux).
   Mouse pastes read the desktop clipboard the same way, falling back to
-  AI-Commander's own clipboard.
+  Temple Agent's own clipboard.
 - **Click** a `▸`/`▾` line to fold or unfold it (thinking, command output,
   session summaries). **Ctrl+click** a URL (shown underlined) to open it in the browser,
   or an existing file path (`path` or `path:line`, relative to the working
@@ -584,7 +588,7 @@ Combine it with `--verify` so "done" has to pass your tests.
 
 Because every iteration starts empty, `/loop` in the TUI replaces the current
 conversation (and the session file mirrors only the running iteration).
-AI-Commander does not commit for you: if you want a commit per iteration, say
+Temple Agent does not commit for you: if you want a commit per iteration, say
 so in `PROMPT.md`.
 
 ### Project instructions (`AGENTS.md`)
@@ -612,7 +616,7 @@ accepts it; anything else sends the output back to the model as
 ## Context compression
 
 Long agent sessions accumulate conversation history. When the estimated token
-count of the history exceeds the prompt budget, AI-Commander compresses it so
+count of the history exceeds the prompt budget, Temple Agent compresses it so
 the request fits inside the model's context window. Compression is triggered
 automatically at the start of each agent step and is a no-op when the history
 is under budget.
@@ -660,7 +664,7 @@ on each step, slowly losing more history than necessary.
 `--compress-alg context-compressor-llm` (the default) is a Factory.ai-style
 **anchored-summary incremental compressor**, the algorithm of the
 [`context-compressor-llm`](https://pypi.org/project/context-compressor-llm/)
-package, built into AI-Commander (no extra dependency). When the non-system
+package, built into Temple Agent (no extra dependency). When the non-system
 log exceeds the budget it:
 
 1. **Evicts the oldest prefix** of the conversation.
@@ -695,7 +699,7 @@ a lower value compresses harder but loses more context.
 
 ## Session persistence
 
-AI-Commander mirrors the **complete conversation history** to a JSON file and
+Temple Agent mirrors the **complete conversation history** to a JSON file and
 reloads it on every startup, so nothing already produced is lost to a crash, a
 `kill`, a closed terminal, or `Ctrl+C`.
 
@@ -793,11 +797,11 @@ python3 aic.py --api-base ... "continue from here"
 
 Each process claims its session file with an `flock` on a sidecar
 `.aicsession.lock` (the data file itself is atomically replaced, so the lock
-lives beside it). Launching a second AI-Commander in the same directory warns
+lives beside it). Launching a second Temple Agent in the same directory warns
 and shifts to a numbered file instead of clobbering the first:
 
 ```
-[SESSION] WARNING: another AI-Commander instance is already using .aicsession
+[SESSION] WARNING: another Temple Agent instance is already using .aicsession
           in this directory; this instance uses .aicsession2 instead (instance 2)
 ```
 
@@ -939,31 +943,3 @@ removed and progress-bar redraws collapsed to their final state.
 ## License
 
 This project is licensed under the [Apache License 2.0](LICENSE).
-
----
-
-## ASCII Pac-Man
-
-`ascii_pacman.py` is a complete, self-contained Pac-Man game for the terminal.
-It uses only the Python standard library (`curses` + `random`), needs no
-assets, and draws everything with ASCII characters.
-
-```bash
-python3 ascii_pacman.py
-```
-
-| Key | Action |
-| --- | --- |
-| Arrow keys / `WASD` / `HJKL` | Move |
-| `P` | Pause / resume |
-| `Q` | Quit |
-| `R` | Restart after game over |
-
-Eat every pellet to clear the level. Big pellets make the ghosts frightened for
-a few seconds — eat them for 200, 400, 800 and 1600 points in a chain. Four
-ghosts with classic personalities (direct chase, ambush, flanking, shy) patrol
-the maze, alternating between scatter and chase phases, and they get faster
-every level. You have three lives and the side tunnels wrap around the screen.
-
-Options: `--no-color`, `--seed N`, `--level N`, `--lives N`, `--selftest`.
-A terminal of at least 32x23 is required.

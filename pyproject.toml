@@ -6,7 +6,7 @@ build-backend = "setuptools.build_meta"
 name = "aic-agent"
 # Version is single-sourced from aic.__version__ (see [tool.setuptools.dynamic]).
 dynamic = ["version"]
-description = "AI-Commander: a ralph-loop AI agent giving LLMs shell access via function calling (TUI + CLI)"
+description = "Temple Agent: a ralph-loop AI agent giving LLMs shell access via function calling (TUI + CLI)"
 readme = "README.md"
 license = { text = "Apache-2.0" }
 authors = [
@@ -49,9 +49,9 @@ dev = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/ortegaalfredo/AICommander"
-Repository = "https://github.com/ortegaalfredo/AICommander"
-Issues = "https://github.com/ortegaalfredo/AICommander/issues"
+Homepage = "https://github.com/ortegaalfredo/temple-agent"
+Repository = "https://github.com/ortegaalfredo/temple-agent"
+Issues = "https://github.com/ortegaalfredo/temple-agent/issues"
 
 [project.scripts]
 aic = "aic:main"
