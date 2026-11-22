@@ -43,6 +43,6 @@ echo "[*] Checking distributions..."
 echo "[*] Uploading to ${REPO_ARGS[*]:-pypi.org} ..."
 "$PYTHON" -m twine upload ${REPO_ARGS[@]+"${REPO_ARGS[@]}"} dist/*
 
-VERSION=$("$PYTHON" -c "import aic; print(aic.__version__)")
-echo "[*] Done. aic-agent $VERSION"
-echo "    https://pypi.org/project/aic-agent/$VERSION/"
+VERSION=$("$PYTHON" -c "import temple; print(temple.__version__)")
+echo "[*] Done. temple-agent $VERSION"
+echo "    https://pypi.org/project/temple-agent/$VERSION/"

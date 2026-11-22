@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "3.0.1"
+__version__ = "3.0.2"
 
 import argparse
 import asyncio
@@ -5811,7 +5811,7 @@ if _TEXTUAL_AVAILABLE:
         "output · Help is this page. F3 cycles them.",
         "The conversation is saved in this directory and comes back on the next start; /clear (or F8 "
         "twice) starts over. Ctrl+T opens another agent in a tab of its own.",
-        "Unattended: aic --nogui \"task\" runs it on the terminal (--json for JSON events), and --loop "
+        "Unattended: temple-agent --nogui \"task\" runs it on the terminal (--json for JSON events), and --loop "
         "PROMPT.md repeats a prompt file until the model is done (a ralph loop).",
     )
 
@@ -7642,7 +7642,7 @@ def main():
             parser.error(f"--{name.replace('_', '-')} is required (or set ${env})")
     args.nogui = args.nogui or args.json
     if args.nogui and not args.request and not args.loop and not sys.stdin.isatty():
-        args.request = [sys.stdin.read().strip()]  # cat PROMPT.md | aic --nogui
+        args.request = [sys.stdin.read().strip()]  # cat PROMPT.md | temple-agent --nogui
         if not _IS_WINDOWS:  # approvals and command input still need the terminal
             with contextlib.suppress(OSError):
                 sys.stdin = open("/dev/tty", encoding="utf-8")  # noqa: SIM115

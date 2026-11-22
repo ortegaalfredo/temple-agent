@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# build_pypi.sh - build the aic-agent sdist and wheel into ./dist
+# build_pypi.sh - build the temple-agent sdist and wheel into ./dist
 #
 # Usage:
 #   ./build_pypi.sh               # build sdist + wheel
@@ -27,8 +27,8 @@ else
     PYTHON="$(command -v python3)"
 fi
 
-VERSION=$("$PYTHON" -c "import aic; print(aic.__version__)")
-echo "[*] Building aic-agent $VERSION"
+VERSION=$("$PYTHON" -c "import temple; print(temple.__version__)")
+echo "[*] Building temple-agent $VERSION"
 
 if ! "$PYTHON" -c "import build" >/dev/null 2>&1; then
     echo "[ERROR] 'build' is not installed. Run: $PYTHON -m pip install build" >&2

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Test suite for the truncation feature and core functionality of aic.py.
+"""Test suite for the truncation feature and core functionality of temple.py.
 
 Two truncation mechanisms are exercised:
 
@@ -48,16 +48,16 @@ import subprocess
 import sys
 import threading
 
-# This script lives in ./tests, so the repo root (where aic.py lives) is the
-# parent directory. Insert it at the front of sys.path so `import aic` works
+# This script lives in ./tests, so the repo root (where temple.py lives) is the
+# parent directory. Insert it at the front of sys.path so `import temple` works
 # regardless of the current working directory.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 # Also make this tests/ directory importable so `import fake_openai` works
 # regardless of how the script is invoked (directly or via a runner).
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import aic
-from aic import TempleAgent, TUISink
+import temple as aic
+from temple import TempleAgent, TUISink
 import fake_openai
 
 
@@ -70,7 +70,7 @@ class TokenUsageTracker:
     when the call finishes; streamed output chunks count live. Only the exact
     numbers are authoritative, so estimates and streamed chunks are rolled back
     on reconcile to avoid double counting. This class is defined here (not in
-    aic.py) because it is purely a test harness, not production code.
+    temple.py) because it is purely a test harness, not production code.
     """
 
     def __init__(self):
@@ -1524,7 +1524,7 @@ class TestRunner:
                 base = os.path.join(tmp2, ".aicsession")
                 holder = subprocess.Popen(
                     [sys.executable, "-c",
-                     "import sys, time; sys.path.insert(0, %r); import aic;"
+                     "import sys, time; sys.path.insert(0, %r); import temple as aic;"
                      "p, _ = aic.acquire_session_file(%r);"
                      "print(p, flush=True); time.sleep(5)"
                      % (os.path.dirname(aic.__file__), base)],
@@ -1931,10 +1931,10 @@ class TestRunner:
         """The openai SDK (about a second to import) is imported on demand, and a
         restored conversation is written in bulk, laid out as line by line."""
         import subprocess
-        out = subprocess.run([sys.executable, "-c", "import aic, sys; print('openai' in sys.modules)"],
+        out = subprocess.run([sys.executable, "-c", "import temple, sys; print('openai' in sys.modules)"],
                              cwd=os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                              capture_output=True, text=True, timeout=60).stdout.strip()
-        self.check("startup: importing aic does not import openai", out == "False", out)
+        self.check("startup: importing temple does not import openai", out == "False", out)
         if not aic._TEXTUAL_AVAILABLE:
             return
         import asyncio
@@ -3425,7 +3425,7 @@ class TestRunner:
                 os.chdir(cwd)
 
     def test_headless_cli(self):
-        """aic.py --nogui --json against a local fake streaming server: env-var
+        """temple.py --nogui --json against a local fake streaming server: env-var
         configuration, a prompt piped on stdin, exit codes, AIC_API_KEY scrub."""
         import http.server
         import subprocess
@@ -3459,7 +3459,7 @@ class TestRunner:
         env = {k: v for k, v in os.environ.items() if not k.startswith(("OPENAI_", "AIC_"))}
         env.update(AIC_API_BASE=f"http://127.0.0.1:{server.server_port}/v1", AIC_MODEL="m", AIC_API_KEY="secret",
                    OPENAI_API_KEY="secret too")
-        script = os.path.join(os.path.dirname(os.path.abspath(aic.__file__)), "aic.py")
+        script = os.path.join(os.path.dirname(os.path.abspath(aic.__file__)), "temple.py")
         try:
             with tempfile.TemporaryDirectory() as tmp:
                 def run(*extra):
@@ -3500,7 +3500,7 @@ class TestRunner:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Test the truncation feature and core functionality of aic.py"
+        description="Test the truncation feature and core functionality of temple.py"
     )
     # Credentials are only needed for the live (network) tests. The offline
     # unit tests construct an TempleAgent but never connect, so placeholders

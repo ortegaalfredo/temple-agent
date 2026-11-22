@@ -1,6 +1,6 @@
 # Temple Agent
 
-**PyPI package:** [`aic-agent`](https://pypi.org/project/aic-agent/) — install with `pip install aic-agent` (the command is `aic`).
+**PyPI package:** [`temple-agent`](https://pypi.org/project/temple-agent/) — install with `pip install temple-agent` (the command is `temple-agent`; the package was called `aic-agent` up to 3.0.0).
 
 Temple Agent is a **ralph-loop AI agent** that provides shell access and task
 planning capabilities to Large Language Models through function calling. It
@@ -128,17 +128,17 @@ A similar session in the Norton Commander skin (`--norton`):
 ### From PyPI (or from source)
 
 ```bash
-pip install aic-agent
+pip install temple-agent
 ```
 
-This installs the `aic` command plus every runtime dependency, including the
+This installs the `temple-agent` command plus every runtime dependency, including the
 Textual TUI, so the TUI and LLM-based context compression work out of the box. (`py-landlock` is installed
 only on Linux; elsewhere the agent simply runs unsandboxed.)
 
 Upgrade with:
 
 ```bash
-pip install --upgrade aic-agent
+pip install --upgrade temple-agent
 ```
 
 ### From a checkout of this repository
@@ -161,7 +161,7 @@ Alternatively, install only the dependencies and run the script directly:
 
 ```bash
 pip install -r requirements.txt
-python3 aic.py ...
+python3 temple.py ...
 ```
 > **Note:** The `py-landlock` package is only used on Linux and
 > is optional — the agent runs unsandboxed if it is not installed.
@@ -171,19 +171,19 @@ python3 aic.py ...
 ## Usage
 
 Temple Agent is a single-file script. Run it from the repository root with
-`python3 aic.py`, or use the `aic` command installed by the
-[`aic-agent`](https://pypi.org/project/aic-agent/) package:
+`python3 temple.py`, or use the `temple-agent` command installed by the
+[`temple-agent`](https://pypi.org/project/temple-agent/) package:
 
 ```bash
-# Installed via pip (package: aic-agent)
-aic \
+# Installed via pip (package: temple-agent)
+temple-agent \
   --api-base https://api.example.com/v1 \
   --model your-model-name \
   --api-key YOUR_API_KEY \
   "your task request"
 
 # From a repository checkout
-python3 aic.py \
+python3 temple.py \
   --api-base https://api.example.com/v1 \
   --model your-model-name \
   --api-key YOUR_API_KEY \
@@ -240,27 +240,27 @@ complete, `1` error, `2` step or iteration limit reached, `130` stopped.
 
 ```bash
 # Run in the TUI (default)
-python3 aic.py --api-base https://api.example.com/v1 \
+python3 temple.py --api-base https://api.example.com/v1 \
   --model gpt-4o --api-key sk-... "List all files in this directory"
 
 # Run in plain CLI mode
-python3 aic.py --nogui --api-base https://api.example.com/v1 \
-  --model gpt-4o --api-key sk-... "Summarize the contents of aic.py"
+python3 temple.py --nogui --api-base https://api.example.com/v1 \
+  --model gpt-4o --api-key sk-... "Summarize the contents of temple.py"
 
 # Auto-approve all commands (useful for testing / scripting)
-python3 aic.py --auto-approve --api-base https://api.example.com/v1 \
+python3 temple.py --auto-approve --api-base https://api.example.com/v1 \
   --model gpt-4o --api-key sk-... "Set up a new Python project"
 
 # Use the truncation algorithm and a smaller, faster prompt
-python3 aic.py --fast --api-base https://api.example.com/v1 \
+python3 temple.py --fast --api-base https://api.example.com/v1 \
   --model gpt-4o --api-key sk-... "List all files"
 
 # Headless: configuration from the environment, prompt on stdin, JSON events
 export AIC_API_BASE=https://api.example.com/v1 AIC_MODEL=gpt-4o AIC_API_KEY=sk-...
-cat task.md | aic --json --auto-approve --verify "pytest -q" > events.jsonl
+cat task.md | temple-agent --json --auto-approve --verify "pytest -q" > events.jsonl
 
 # Ralph loop: PROMPT.md re-run with a fresh context until the objective is done
-aic --nogui --auto-approve --loop PROMPT.md --max-iterations 20 --verify "make test"
+temple-agent --nogui --auto-approve --loop PROMPT.md --max-iterations 20 --verify "make test"
 ```
 
 ---
@@ -751,7 +751,7 @@ Plain, indented, UTF-8 JSON — deliberately simple enough to read and edit:
       { "id": "call_1", "type": "function",
         "function": { "name": "execute_bash",
                       "arguments": "{\"command\": \"ls\"}" } } ] },
-    { "role": "tool", "tool_call_id": "call_1", "content": "aic.py\nREADME.md" }
+    { "role": "tool", "tool_call_id": "call_1", "content": "temple.py\nREADME.md" }
   ]
 }
 ```
@@ -776,7 +776,7 @@ d = json.load(open(".aicsession"))
 d["messages"] = d["messages"][:-6]
 json.dump(d, open(".aicsession", "w"), indent=2)
 EOF
-python3 aic.py --api-base ... "continue from here"
+python3 temple.py --api-base ... "continue from here"
 ```
 
 - Change, insert, or delete turns; edits are picked up on the next startup, or
@@ -930,7 +930,7 @@ removed and progress-bar redraws collapsed to their final state.
 ## Project structure
 
 ```
-├── aic.py            # The entire agent (single-file implementation)
+├── temple.py            # The entire agent (single-file implementation)
 ├── requirements.txt  # Python dependencies
 ├── README.md         # This file
 ├── changelog.txt     # Release notes, newest first

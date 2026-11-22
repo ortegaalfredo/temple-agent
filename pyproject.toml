@@ -3,8 +3,8 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aic-agent"
-# Version is single-sourced from aic.__version__ (see [tool.setuptools.dynamic]).
+name = "temple-agent"
+# Version is single-sourced from temple.__version__ (see [tool.setuptools.dynamic]).
 dynamic = ["version"]
 description = "Temple Agent: a ralph-loop AI agent giving LLMs shell access via function calling (TUI + CLI)"
 readme = "README.md"
@@ -54,10 +54,10 @@ Repository = "https://github.com/ortegaalfredo/temple-agent"
 Issues = "https://github.com/ortegaalfredo/temple-agent/issues"
 
 [project.scripts]
-aic = "aic:main"
+temple-agent = "temple:main"
 
 [tool.setuptools]
-py-modules = ["aic"]
+py-modules = ["temple"]
 
 [tool.setuptools.dynamic]
-version = {attr = "aic.__version__"}
+version = {attr = "temple.__version__"}

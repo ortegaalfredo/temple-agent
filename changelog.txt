@@ -1,11 +1,20 @@
 Temple Agent changelog
 ======================
 
+3.0.2
+-----
+
+- The script is now temple.py (was aic.py): run it as python3 temple.py, or
+  install the temple-agent package (pip install temple-agent) and run
+  temple-agent. The old aic-agent package now only installs temple-agent.
+  Sessions (.aicsession), ~/.aic and the AIC_* variables are unchanged.
+
 3.0.1
 -----
 
-- AI-Commander is now Temple Agent (repository: github.com/ortegaalfredo/temple-agent;
-  the PyPI package is still aic-agent and the command still aic).
+- AI-Commander is now Temple Agent (repository: github.com/ortegaalfredo/temple-agent).
+  The PyPI package is now temple-agent and its command temple-agent; the
+  portable bundle keeps its aic launcher.
 - The TempleOS skin is the default; --norton gives the Norton Commander one.
 - The README shows the TempleOS skin, next to the Norton Commander one.
 
