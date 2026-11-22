@@ -75,7 +75,7 @@ A similar session in the Norton Commander skin (`--norton`):
   `--verify "pytest -q"` gates every completion on your tests.
 - **Headless use** — exit codes, a prompt on stdin, configuration through
   environment variables and JSON-lines events (`--json`).
-- **Web search** — using the duck-duck-go `ddgs` Python package (installed via requirements.txt).
+- **Web search** — DuckDuckGo through the dependency-free `ddgr` package (installed via requirements.txt; GPLv3, run as a separate command).
 - **Approval gate** — review each command before it runs, or auto-approve.
   Read-only commands (`ls`, `cat`, `grep`, `git status`, ...) and `read_file`
   run without asking unless `--confirm-reads` is given.

@@ -33,7 +33,7 @@ classifiers = [
 # yields a fully working TUI. textual brings rich, which the TUI also imports.
 dependencies = [
     "openai>=2.0.0",
-    "ddgs>=8.0.0",
+    "ddgr>=2.2",
     "textual>=8.0.0",
     "pyte>=0.8.2",
     # Landlock is a Linux-only kernel sandbox; the agent runs unsandboxed

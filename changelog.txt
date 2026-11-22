@@ -1,6 +1,15 @@
 Temple Agent changelog
 ======================
 
+3.0.4
+-----
+
+- Web search uses ddgr (DuckDuckGo, a single file with no dependencies)
+  instead of ddgs, which pulled in primp, lxml and click. The model runs it
+  as `<python> -m ddgr --json` with the agent's own interpreter, and can
+  limit results by time (-t) or site (-w). The portable .run drops from
+  23.5 MB to 16.7 MB (it was 37.7 MB before it moved to xz and lost pip).
+
 3.0.3
 -----
 

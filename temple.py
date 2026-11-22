@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "3.0.3"
+__version__ = "3.0.4"
 
 import argparse
 import asyncio
@@ -107,9 +107,9 @@ if pyte is not None:
     _Scrollback = collections.namedtuple("_Scrollback", "top")
 
 try:
-    _DDGS_AVAILABLE = find_spec("ddgs") is not None
+    _DDGR_AVAILABLE = find_spec("ddgr") is not None
 except (ImportError, ValueError):
-    _DDGS_AVAILABLE = False
+    _DDGR_AVAILABLE = False
 
 DEFAULT_MAX_PROMPT_LEN = 80000
 # Browser-like User-Agent for API calls and for curl/wget run by the agent, so
@@ -1855,12 +1855,13 @@ Rules:
 
     @staticmethod
     def _web_note() -> str:
-        return ("- Web search by printing JSON results to stdout: `python3 -c \"import json; from ddgs import DDGS; "
-                "print(json.dumps(list(DDGS().text('QUERY', max_results=10)), ensure_ascii=False, indent=2))\"` "
-                "(replace QUERY). Use wget/curl and the w3m browser to fetch page contents.\n"
-                + ("(ddgs is installed and available.)" if _DDGS_AVAILABLE else
-                   "(NOTE: the ddgs package is NOT installed in this environment: that one-liner will fail with "
-                   "ModuleNotFoundError. Install it with `pip install ddgs`, or rely on curl/wget/w3m only.)"))
+        python = f'"{sys.executable}"' if " " in sys.executable else sys.executable  # this agent's, which has ddgr
+        return (f"- Web search (DuckDuckGo), printing JSON results (title, url, abstract) to stdout: `{python} -m ddgr "
+                "--json -n 10 'QUERY'` (replace QUERY; up to -n 25; -t d|w|m|y keeps the last day/week/month/year, "
+                "-w SITE one site). Use wget/curl and the w3m browser to fetch page contents.\n"
+                + ("(ddgr is installed and available.)" if _DDGR_AVAILABLE else
+                   "(NOTE: the ddgr package is NOT installed in this environment: that command will fail with "
+                   "'No module named ddgr'. Install it with `pip install ddgr`, or rely on curl/wget/w3m only.)"))
 
     # --- Command execution ---------------------------------------------------
 
