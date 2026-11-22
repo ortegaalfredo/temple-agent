@@ -11,7 +11,7 @@ in control through an approval gate.
 It supports two presentation modes:
 
 - **Default (TUI)** — a [Textual](https://textual.textualize.io/)-based,
-  Norton-Commander-style terminal UI: an agent pane and a Status/Shell/Tools pane, a
+  Norton-Commander-style terminal UI (`--templeos` for a TempleOS one): an agent pane and a Status/Shell/Tools pane, a
   multi-line prompt, a status line and a function-key bar, with full mouse
   support (select to copy, right/middle-click to paste, resizable panes,
   foldable output, clickable links) and `Ctrl+F` search.
@@ -209,6 +209,8 @@ panel. In `--nogui` mode a request is required on the command line.
 | `--nogui` | Run in direct CLI mode without TUI (original behaviour). No session file is read or written unless `--session` is given. |
 | `--no-mouse` | TUI without mouse capture, leaving selection and paste to the terminal itself. |
 | `--no-markdown` | Show the agent's replies raw in the TUI, without rendering their markdown (headings, emphasis, lists, code blocks, tables). |
+| `--norton` | Norton Commander look for the TUI: blue panels, status line at the bottom (the default). |
+| `--templeos` | TempleOS look for the TUI: white windows with blue text in double-line borders, grey pop-ups, the status line on top (WHITE on BLUE, led by the date and time), a black/yellow blinking cursor, blinking red warnings, scrolling tab titles and each pane's name down its left border. Only the look changes. |
 | `--session` | Session file mirroring the conversation history (default: `./.aicsession`). |
 | `--no-session` | Disable session persistence (nothing is written or loaded). |
 | `--disable-sandbox` | Disable the OS-level Landlock sandbox (Linux only). |
@@ -318,7 +320,8 @@ outputs, job logs) are removed.
 
 ### Layout
 
-The default Textual interface is a Norton-Commander-style split screen:
+The default Textual interface is a Norton-Commander-style split screen
+(`--templeos` gives it TempleOS colors):
 
 - **Agent tabs**: the strip above the left pane has one tab per agent; `+`
   (or `Ctrl+T`) opens another. Every tab is an independent agent with its own

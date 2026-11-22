@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "2.9.1"
+__version__ = "3.0.0"
 
 import argparse
 import asyncio
@@ -48,7 +48,7 @@ if not _IS_WINDOWS:  # the PTY command runner and the embedded shell are POSIX-o
 try:  # optional: the TUI (--nogui runs without it)
     from rich.cells import cell_len
     from rich.color import Color, blend_rgb
-    from rich.segment import Segment
+    from rich.segment import Segment, Segments
     from rich.style import Style
     from rich.syntax import Syntax
     from rich.table import Table
@@ -3349,6 +3349,7 @@ if _TEXTUAL_AVAILABLE:
     _C_SUGGEST = "#d7af5f"  # the rule over a suggestion sent while the agent works
     _SUGGESTION_PREFIXES = ("[Suggestion from user] ", "I suggest you ")  # how suggestions enter the history
     _C_CMD, _C_OK, _C_FAIL, _C_DIM = "bold #ffd75f", "#5fd787", "#ff8787", "#8fa8cc"
+    _C_DEL = "#ff8686"  # removed lines and files: _C_FAIL's red, but it does not blink in the TempleOS skin
     _SELECTION = Style(color="#000000", bgcolor="#87d7ff")
     _LOG_STYLES = {"yellow": "#ffd75f", "green": "#5fd787", "red": "#ff8787", "cyan": "#87d7ff",
                    "dim": _C_DIM, "bold bright_yellow": _C_USER}
@@ -4615,6 +4616,9 @@ if _TEXTUAL_AVAILABLE:
             return self._COLOR_NAMES.get(name, name)
 
         def _style(self, char, cursor: bool, selected: bool) -> Style:
+            if cursor and self.app.TEMPLEOS:  # the prompt's cursor: black and yellow by turns
+                return Style(bold=char.bold or None, **({"color": "#0000aa", "bgcolor": "#ffff55"} if self.app._yellow
+                                                        else {"color": "#ffffff", "bgcolor": "#140000"}))
             key = (char.fg, char.bg, char.bold, char.italics, char.underscore, char.reverse,
                    char.strikethrough, cursor, selected)
             style = self._styles.get(key)
@@ -4697,16 +4701,54 @@ if _TEXTUAL_AVAILABLE:
             self._release()  # a reader left behind would fire on a widget with no screen (NoScreen)
 
     class Splitter(Widget):
-        """The column between the two panels: drag it to resize them, double-click
-        to split them evenly again. The left width is kept as a percentage."""
+        """The column between the two panels, the one border they share (a ║ joined
+        to their top and bottom borders, with the right pane's name down it in the
+        TempleOS skin): drag it to resize them, double-click to split them evenly
+        again. The left width is kept as a percentage."""
 
         DEFAULT_CSS = """
-        Splitter { width: 1; height: 1fr; background: #12488b; }
-        Splitter:hover, Splitter.-drag { background: #87d7ff; }
+        Splitter { width: 1; height: 1fr; background: #12488b; color: #6f8fc0; }
+        Splitter.-focus { color: #87d7ff; }
+        Splitter:hover, Splitter.-drag { background: #87d7ff; color: #0b2f5e; }
         """
+        # Junctions by (left side, right side), each "top", "bottom", "in" (beside the line) or None.
+        _JOINS = {("top", "top"): "╦", ("bottom", "bottom"): "╩", ("top", "in"): "╣", ("bottom", "in"): "╣",
+                  ("in", "top"): "╠", ("in", "bottom"): "╠", ("top", None): "╗", ("bottom", None): "╝",
+                  (None, "top"): "╔", (None, "bottom"): "╚", ("top", "bottom"): "╬", ("bottom", "top"): "╬"}
+        _SINGLE = str.maketrans("╦╩╣╠╗╝╔╚╬", "╥╨╢╟╖╜╓╙╫")  # joins to single-line (unfocused) borders
+
+        def __init__(self, **kwargs):
+            super().__init__(**kwargs)
+            self._lines = ""
+
+        def sync(self, left: Widget | None, right: Widget | None, label: str = "") -> None:
+            """Draw the line beside *left* and *right* (the panes, joined to their borders)."""
+            def side(pane, y):
+                if pane is None or not pane.display or not pane.region.height:
+                    return None
+                top, bottom = pane.region.y, pane.region.bottom - 1
+                return "top" if y == top else "bottom" if y == bottom else "in" if top < y < bottom else None
+
+            focused = self.app.focused
+            double = [pane is not None and focused is not None and pane in focused.ancestors_with_self
+                      for pane in (left, right)]
+            top = right.region.y if right is not None else 0
+            rows = []
+            for y in range(self.region.y, self.region.bottom):
+                ends = side(left, y), side(right, y)
+                char = self._JOINS.get(ends, "║" if "in" in ends else " ")
+                if not any(double) and not self.app.TEMPLEOS:  # single-line borders: single-line joins
+                    char = char.translate(self._SINGLE)
+                if char == "║" and 0 < y - top <= len(label):
+                    char = label[y - top - 1]
+                rows.append(char)
+            self.set_class(any(double), "-focus")
+            if (lines := "\n".join(rows)) != self._lines:
+                self._lines = lines
+                self.refresh()
 
         def render(self) -> str:
-            return ""
+            return self._lines
 
         @property
         def split(self) -> float:
@@ -4990,13 +5032,13 @@ if _TEXTUAL_AVAILABLE:
                     path, change, (added, removed, label) = item
                     tail = Text()
                     if added is not None:
-                        tail.append(f" +{added}", "#5fd787").append(f" −{removed}", "#ff8787")
+                        tail.append(f" +{added}", "#5fd787").append(f" −{removed}", _C_DEL)
                     for note in (label, "bash" if change["via"] == "bash" else ""):
                         if note:
                             tail.append(f" · {note}", _C_DIM)
                     room = max(8, width - tail.cell_len - 4 - 2 * depth)
                     shown = name if cell_len(name) <= room else "…" + name[-(room - 1):]
-                    color = {"new": "#5fd787", "deleted": "#ff8787"}.get(label, "#ffd75f")
+                    color = {"new": "#5fd787", "deleted": _C_DEL}.get(label, "#ffd75f")
                     line.append("● ", color).append(shown.ljust(room), "#e5e5e5").append_text(tail)
                     if path == self.diff_path:
                         line.stylize("bold on #1f5fa8", 1 + 2 * depth)
@@ -5016,7 +5058,7 @@ if _TEXTUAL_AVAILABLE:
             if before is False or after is False:
                 lines = [("Binary, unreadable or larger than 1 MB: no diff to show.", _C_DIM)]
             else:
-                lines = [(ln, "#5fd787" if ln.startswith("+") else "#ff8787" if ln.startswith("-")
+                lines = [(ln, "#5fd787" if ln.startswith("+") else _C_DEL if ln.startswith("-")
                           else "#87d7ff" if ln.startswith("@@") else "#c8d0e0") for ln in
                          list(difflib.unified_diff((before or "").splitlines(), (after or "").splitlines(),
                                                    lineterm=""))[2:]]
@@ -5275,11 +5317,18 @@ if _TEXTUAL_AVAILABLE:
                     label = f" Status ({tab.unseen_changes()}) "
                 elif tab and pane != active and pane == "tools" and tab.tools_unseen:
                     label = " Tools ● "
-                style = "bold #000000 on #06989a" if pane == active else "#e5e5e5 on #0b2f5e"
+                style = (("bold #0000aa on #ffff55" if pane == active else "#ffff55 on #5555ff") if self.app.TEMPLEOS
+                         else "bold #000000 on #06989a" if pane == active else "#e5e5e5 on #0b2f5e")
                 self._add(text, label, style, f"show_pane('{pane}')")
                 text.append(" ")
             text.append("F3 switches", "#6f8fc0")
             return text
+
+    def _marquee(text: str, width: int, speed: float = 8) -> str:
+        """*text* scrolling to the left through *width* cells (a gap before it comes round)."""
+        loop = text.ljust(max(width, len(text) + 3))
+        shift = int(time.monotonic() * speed) % len(loop)
+        return (loop[shift:] + loop[:shift])[:width]
 
     class AgentTabs(_ClickBar):
         """The agent tab strip of the left panel: one tab per agent, + opens one."""
@@ -5292,17 +5341,21 @@ if _TEXTUAL_AVAILABLE:
                 mark, close = tab.mark(), " ×" if tab is active and len(tabs) > 1 else ""
                 title = " ".join(tab.agent.task_summary.split()) or "Agent"
                 room = max(1, slot - len(str(pos)) - len(mark) - len(close) - 3)
-                if cell_len(title) > room:
+                if self.app.TEMPLEOS:  # the title scrolls right to left, as TempleOS's do
+                    title = _marquee(title, min(room, len(title) + 10))
+                elif cell_len(title) > room:
                     title = title[:max(1, room - 1)] + "…"
-                style = ("bold #000000 on #06989a" if tab is active else
+                style = (("bold #0000aa on #140000" if self.app.TEMPLEOS else "bold #000000 on #06989a")
+                         if tab is active else
                          f"bold #000000 on {_pulse('#ffd75f', '#8a6d1f')}" if tab.waiting
-                         else "#e5e5e5 on #0b2f5e")
+                         else "#ffff55 on #5555ff" if self.app.TEMPLEOS else "#e5e5e5 on #0b2f5e")
                 self._add(text, f" {pos} {mark}{title}", style, f"select_tab({pos})")
                 if close:
                     self._add(text, close, style, f"close_tab({pos})")
                 text.append(" ", style)
                 text.append(" ")
-            self._add(text, " + ", "bold #ffff5f on #0b2f5e", "new_tab")
+            self._add(text, " + ", "bold #ffff55 on #5555ff" if self.app.TEMPLEOS else "bold #ffff5f on #0b2f5e",
+                      "new_tab")
             if width - text.cell_len > 17:
                 text.append(" ^T new ^G go to", "#6f8fc0")
             return text
@@ -6342,6 +6395,8 @@ if _TEXTUAL_AVAILABLE:
         #left-panel, #right-panel { width: 1fr; }
         #agent-tabs, #tabs { height: 1; background: #0b2f5e; }
         #agent-stack, #switcher { height: 1fr; }
+        #panels.-joined #agent-stack > OutputLog { border-right: none; }
+        #panels.-joined #switcher > * { border-left: none; }
         ShellWidget { background: #000000; color: #e5e5e5; }
         PromptArea { height: auto; min-height: 3; max-height: 12; background: #000000; color: #f2f2f2;
                      border: round #06989a; padding: 0 1; border-title-color: #5fd7ff;
@@ -6385,6 +6440,7 @@ if _TEXTUAL_AVAILABLE:
             Binding("ctrl+c", "interrupt", "Stop / quit", show=False),
         ]
         ENABLE_COMMAND_PALETTE = False  # it would take Ctrl+P (history) from the prompt
+        TEMPLEOS = False  # the TempleOS skin: a clock on the status line, scrolling tab titles
 
         def __init__(self, args, history: PromptHistory | None = None):
             super().__init__()
@@ -6403,7 +6459,7 @@ if _TEXTUAL_AVAILABLE:
         # Layout -----------------------------------------------------------------
 
         def compose(self) -> ComposeResult:
-            with Horizontal(id="panels"):
+            with Horizontal(id="panels", classes="-joined"):
                 with Vertical(id="left-panel"):
                     yield AgentTabs(id="agent-tabs")
                     yield Vertical(id="agent-stack")
@@ -6615,6 +6671,16 @@ if _TEXTUAL_AVAILABLE:
             for tab in list(self.tabs):
                 tab.tick()
             self._refresh_status()
+            self._sync_splitter()
+
+        def _sync_splitter(self) -> None:
+            """The panes share the splitter as their inner border (a zoomed pane gets its own back)."""
+            panels = self.query_one("#panels")
+            panels.set_class(self.screen_stack[0].maximized is None, "-joined")
+            if self.tab is not None:
+                right = self.tab.right_pane
+                label = _TOS_LABELS.get((right.id or "").rpartition("-")[0], "") if self.TEMPLEOS else ""
+                panels.query_one(Splitter).sync(self.tab.agent_log, right, label)
 
         # Approvals ---------------------------------------------------------------
 
@@ -6715,7 +6781,7 @@ if _TEXTUAL_AVAILABLE:
                 (f"{phase[0]} {phase[1]}", "bold #000000 on #5fd7ff" if busy else "bold #000000 on #5fd787"),
                 (f"step {tab.step}/{tab.max_steps}", ""),
                 (f"ctx {_fmt_tokens(ctx)}/{_fmt_tokens(budget)} {min(999, ctx * 100 // budget)}%",
-                 "bold #800000" if ctx > budget * 0.9 else ""),
+                 ("bold #ff5f5f" if self.TEMPLEOS else "bold #800000") if ctx > budget * 0.9 else ""),
                 (f"Σ {_fmt_tokens(tab.total_tokens)} tok", ""),
                 (f"{rate:.0f} tok/s", ""),
                 ("AUTO-APPROVE" if tab.auto_approve else "approve: ask",
@@ -6727,6 +6793,8 @@ if _TEXTUAL_AVAILABLE:
                  f"{os.path.basename(tab.session_file) if tab.session_file else 'no session'}", ""),
             ]
             status = Text(no_wrap=True, overflow="ellipsis")
+            if self.TEMPLEOS:  # TempleOS leads its top line with the weekday, date and time
+                status.append(time.strftime(" %a %m/%d %H:%M:%S "), "bold #ffff55")
             for i, (chunk, style) in enumerate(parts):
                 if i > 1:
                     status.append("│", "#0b2f5e")
@@ -7128,6 +7196,244 @@ if _TEXTUAL_AVAILABLE:
             self.history.close()
             self.exit()
 
+    # TempleOS skin (--templeos) -----------------------------------------------------
+    # The 16 TempleOS colors, by index: BLACK BLUE GREEN CYAN RED PURPLE BROWN LTGRAY
+    # DKGRAY LTBLUE LTGREEN LTCYAN LTRED LTPURPLE YELLOW WHITE.
+    _TOS_HEX = ("000000", "0000aa", "00aa00", "00aaaa", "aa0000", "aa00aa", "aa5500", "aaaaaa",
+                "555555", "5555ff", "55ff55", "55ffff", "ff5555", "ff55ff", "ffff55", "ffffff")
+    # What the filter paints: each color with its lowest bit flipped (the same to the eye), so a second
+    # pass (the screen under a pop-up is filtered again) recognizes and keeps it.
+    _TOS_OUT = {"%s%02x" % (h[:4], int(h[4:], 16) ^ 1): i for i, h in enumerate(_TOS_HEX)}
+    _TOS_DARK = {0, 1, 2, 3, 4, 5, 6, 8, 9}  # backgrounds that take the light variant of a text color
+    # AI-Commander's own colors as backgrounds, and as text color families (dark, light variant).
+    # Markers (matched loosely: a pop-up dims the screen under it a little): #140000 is a true black, as
+    # AI-Commander's #000000 turns white, #000014 border lines are black on light blue and #001400 is a
+    # blinking black.
+    _TOS_BG = {"12488b": 15, "0b2f5e": 15, "123f78": 15, "1d5a9e": 15, "000000": 15, "06989a": 9,
+               "5fd7ff": 3, "5fd787": 2, "af0000": 4, "87d7ff": 14, "ffd75f": 14, "1f5fa8": 7, "8a6d1f": 6}
+    _TOS_FAMILY = {"text": (1, 15), "gray": (8, 7), "blue": (1, 15), "cyan": (3, 11), "green": (2, 10),
+                   "red": (4, 12), "purple": (5, 13), "yellow": (6, 14)}
+    _TOS_FG = {**dict.fromkeys(("e5e5e5", "f2f2f2", "ffffff", "d0d0d0", "c8d0e0", "d7d7ff", "000000"), "text"),
+               **dict.fromkeys(("b2b28a", "8fa8cc", "6f8fc0", "8a9bb8", "4f74b3", "8fb3e0"), "gray"),
+               **dict.fromkeys(("ffd7af", "d7af5f", "8a6d1f"), "yellow"),
+               "ffff5f": "green", "ffd75f": "purple", "87d7ff": "blue", "5fd7ff": "cyan"}
+    _TOS_BLINK = {"ff8787", "ff5f5f", "af0000"}  # AI-Commander's warning reds: they blink, as in TempleOS
+
+    class _TosBlink:
+        """The blink phase, the widget being painted and the widgets painted with blinking text."""
+        on, widget, seen = False, None, set()
+
+    def _tos_line_filters(widget) -> list:
+        _TosBlink.widget = widget  # (its lines go through the filter right after this)
+        return widget.app.get_line_filters()
+
+    _TOS_COLORS = [Color.parse("#" + h) for h in sorted(_TOS_OUT, key=_TOS_OUT.get)]
+    _tos_cache: dict = {}
+
+    def _tos_hex(color) -> str | None:
+        if color is None or color.is_default:
+            return None
+        r, g, b = color.get_truecolor()
+        if g < 5 and abs(r + b - 20) < 6 and min(r, b) < 5:  # a marker
+            return "black" if r > b else "border"
+        if r < 5 and b < 5 and abs(g - 20) < 6:
+            return "blinkblack"
+        return "%02x%02x%02x" % (r, g, b)
+
+    def _tos_family(rgb: str) -> str:
+        r, g, b = (int(rgb[i:i + 2], 16) for i in (0, 2, 4))
+        hi, lo = max(r, g, b), min(r, g, b)
+        if hi - lo < 40:
+            return "gray" if 60 <= hi <= 200 else "text"
+        hue = (60 * ((g - b) / (hi - lo) % 6) if hi == r else
+               60 * ((b - r) / (hi - lo) + 2) if hi == g else 60 * ((r - g) / (hi - lo) + 4))
+        return next(name for top, name in ((20, "red"), (70, "yellow"), (160, "green"), (200, "cyan"),
+                                           (260, "blue"), (330, "purple"), (360, "red")) if hue < top)
+
+    def _tos_bg(rgb: str | None) -> int:
+        """The TempleOS background for *rgb*: windows are white, accents keep their hue."""
+        if rgb is None:
+            return 15
+        if rgb in _TOS_OUT:
+            return _TOS_OUT[rgb]
+        if rgb in _TOS_BG:
+            return _TOS_BG[rgb]
+        if rgb in _TOS_HEX:
+            return _TOS_HEX.index(rgb)
+        r, g, b = (int(rgb[i:i + 2], 16) for i in (0, 2, 4))
+        hi, lo = max(r, g, b), min(r, g, b)
+        if hi - lo < 40:
+            return 7 if 110 <= hi <= 200 else 15
+        dark, light = _TOS_FAMILY[_tos_family(rgb)]
+        return light if lo > 150 else dark
+
+    def _tos_fg(rgb: str | None, bg: int, link: bool) -> int:
+        """The TempleOS text color for *rgb* on background *bg* (links are red, as in DolDoc)."""
+        if rgb in _TOS_OUT:
+            return _TOS_OUT[rgb]
+        if rgb is not None and rgb not in _TOS_FG and rgb in _TOS_HEX:
+            return _TOS_HEX.index(rgb)
+        family = "text" if rgb is None else _TOS_FG.get(rgb) or _tos_family(rgb)
+        if link and family in ("blue", "cyan"):
+            family = "red"
+        dark, light = _TOS_FAMILY[family]
+        if family == "gray" and bg == 9:  # LTGRAY hints would fade into the light blue frames
+            return 0
+        return light if bg in _TOS_DARK else dark
+
+    def _tos_style(style: Style | None, base: str | None) -> tuple[Style, bool]:
+        """The style repainted, and whether it blinks."""
+        key = (style, base, _TosBlink.on)
+        out = _tos_cache.get(key)
+        if out is None:
+            style = style or Style()
+            text, back = _tos_hex(style.color), _tos_hex(style.bgcolor) or base
+            blink = text in _TOS_BLINK or back in _TOS_BLINK or text == "blinkblack"
+            if style.reverse:  # map what shows (the text color is the cell's background), then un-reverse
+                text, back = back, text or "0000aa"
+            bg = 0 if back == "black" else 9 if text == "border" else _tos_bg(back)
+            fg = 0 if text in ("black", "border", "blinkblack") else _tos_fg(text, bg, bool(style.underline))
+            if blink and _TosBlink.on:  # TempleOS blinks by swapping the text and background colors
+                fg, bg = bg, fg
+            out = (style + Style(color=_TOS_COLORS[fg], bgcolor=_TOS_COLORS[bg], reverse=False), blink)
+            if len(_tos_cache) > 8192:
+                _tos_cache.clear()
+            _tos_cache[key] = out
+        return out
+
+    from textual.filter import LineFilter
+
+    class TempleFilter(LineFilter):
+        """Repaints every cell in the TempleOS palette: blue text on white windows."""
+
+        def apply(self, segments: list[Segment], background) -> list[Segment]:
+            base = "%02x%02x%02x" % background.rgb if background is not None and background.a else None
+            out, blinks = [], False
+            for text, style, control in segments:
+                style, blink = _tos_style(style, base)
+                out.append(Segment(text, style, control))
+                blinks |= blink
+            if blinks and _TosBlink.widget is not None:
+                _TosBlink.seen.add(_TosBlink.widget)
+            return out
+
+    _TOS_LABELS = {"agent-log": "agent", "console-log": "tools", "shell-widget": "term", "status-pane": "status",
+                   "help-pane": "help"}  # pane (by widget id) -> its name on its left border
+    _widget_render_lines = Widget.render_lines
+
+    def _tos_render_lines(widget, crop) -> list:
+        """Widget.render_lines, plus the pane's name down its left border, a letter a row (TempleOS)."""
+        strips = _widget_render_lines(widget, crop)
+        label = _TOS_LABELS.get((widget.id or "").rpartition("-")[0])
+        if label and crop.x == 0 and widget.styles.border_left[0] not in ("", "none", "hidden"):
+            style = Style(bold=True, color=_TOS_COLORS[0], bgcolor=_TOS_COLORS[9])
+            label = label[:max(0, widget.outer_size.height - 2)]
+            for i, strip in enumerate(strips):
+                if 1 <= crop.y + i <= len(label):
+                    strips[i] = Strip.join([Strip([Segment(label[crop.y + i - 1], style)], 1), strip.crop(1)])
+        return strips
+
+    from textual.scrollbar import ScrollBar, ScrollBarRender
+
+    class TempleScrollBar(ScrollBarRender):
+        """TempleOS's scroll bar: a white cell with a black square in it, on a blue track."""
+
+        @classmethod
+        def render_bar(cls, size: int = 25, virtual_size: float = 50, window_size: float = 20, position: float = 0,
+                       thickness: int = 1, vertical: bool = True, back_color=None, bar_color=None) -> Segments:
+            blank, size = " " * (thickness if vertical else 1), int(size)
+            up, down = ({"@mouse.down": "scroll_up"}, {"@mouse.down": "scroll_down"})
+            at = size  # no thumb when there is nothing to scroll
+            if size and window_size and virtual_size > window_size:
+                at = round((size - 1) * min(1.0, max(0.0, position / (virtual_size - window_size))))
+            segments = ([Segment(blank, Style(bgcolor=back_color, meta=up))] * min(at, size)
+                        + [Segment("■".center(len(blank)), Style(color="#140000", bgcolor="#ffffff",
+                                                                 meta={"@mouse.down": "grab"}))] * (at < size)
+                        + [Segment(blank, Style(bgcolor=back_color, meta=down))] * max(0, size - at - 1))
+            if vertical:
+                return Segments(segments, new_lines=True)
+            return Segments((segments + [Segment.line()]) * thickness, new_lines=False)
+
+    _B, _W, _G, _Y = "#0000AA", "#FFFFFF", "#AAAAAA", "#FFFF55"  # BLUE, WHITE, LTGRAY, YELLOW
+    _L = "#5555FF"  # LTBLUE: the panes' frames, tab rows and scroll bars (the status line keeps BLUE)
+    _K = "#000014"  # border lines: black on LTBLUE
+    _TEMPLE_CSS = f"""
+    Screen {{ background: {_W} !important; }}
+    * {{ scrollbar-background: {_L} !important; scrollbar-background-hover: {_L} !important;
+        scrollbar-background-active: {_L} !important; }}
+    ModalScreen {{ background: transparent !important; }}
+    #status-bar {{ dock: top; background: {_B} !important; color: {_W} !important; }}
+    #fkeys, StatusPane .head {{ background: {_W} !important; }}
+    #agent-tabs, #tabs {{ background: {_L} !important; color: {_Y} !important; }}
+    Splitter {{ background: {_L} !important; color: {_K} !important; }}
+    Splitter:hover, Splitter.-drag {{ color: {_Y} !important; }}
+    #panels.-joined #agent-stack > OutputLog {{ border-right: none !important; }}
+    #panels.-joined #switcher > * {{ border-left: none !important; }}
+    OutputLog, ShellWidget, StatusPane, HelpPane, PromptArea, FindBar {{
+        background: {_W} !important; color: {_B} !important; border: double {_K} !important; }}
+    OutputLog, ShellWidget, StatusPane, HelpPane, PromptArea, FindBar, TodoPanel, #switcher-box, #models,
+    #approval, #quit, #search, #settings, #help {{ border-title-color: {_W} !important;
+        border-title-background: {_L} !important; border-title-style: bold !important;
+        border-subtitle-color: {_W} !important; border-subtitle-background: {_L} !important; }}
+    PromptArea {{ border-title-color: #001400 !important; }}
+    OutputLog:focus, ShellWidget:focus, StatusPane:focus-within, HelpPane:focus, PromptArea:focus,
+    ContextScreen OutputLog {{ border: double {_K} !important; }}
+    StatusPane OutputLog, StatusPane OutputLog:focus {{ border: none !important; }}
+    PromptArea .text-area--cursor-line {{ background: {_W} !important; }}
+    PromptArea .text-area--cursor, Input > .input--cursor {{ background: #140000 !important;
+        color: {_W} !important; }}
+    PromptArea.-yellow .text-area--cursor, Input.-yellow > .input--cursor {{ background: {_Y} !important;
+        color: {_B} !important; }}
+    PromptArea .text-area--placeholder {{ color: {_G} !important; }}
+    HelpPane .url:hover {{ background: {_Y} !important; }}
+    TodoPanel, #switcher-box, #models, #approval, #quit, #search, #settings, #help {{
+        background: {_G} !important; color: {_B} !important; border: double {_K} !important; }}
+    #approval-cmd {{ background: {_W} !important; }}
+    OptionList, OptionList:focus {{ background: {_G} !important; color: {_B} !important; }}
+    OptionList > .option-list--option-highlighted {{ background: {_B} !important; color: {_W} !important; }}
+    OptionList > .option-list--option-hover {{ background: {_Y} !important; }}
+    Input, #settings Input, #settings Input:focus {{ background: {_W} !important; color: {_B} !important; }}
+    Input {{ border: double {_B} !important; }}
+    #settings Input {{ border: none !important; }}
+    Button {{ background: {_G} !important; color: {_B} !important; border: double {_B} !important;
+        text-style: bold !important; }}
+    Button:hover {{ background: {_Y} !important; }}
+    Button:focus {{ background: {_B} !important; color: {_W} !important; }}
+    """
+
+    class TempleApp(CommanderApp):
+        """AI-Commander in TempleOS clothes (--templeos): white windows with blue
+        text in double-line borders (black on light blue), grey pop-ups, and the status
+        line on top (WHITE on BLUE) led by the date and time, as TempleOS draws it."""
+
+        CSS = CommanderApp.CSS + _TEMPLE_CSS
+        TEMPLEOS = True
+
+        def __init__(self, *args, **kwargs):
+            super().__init__(*args, **kwargs)
+            self._filters.append(TempleFilter())
+            ScrollBar.renderer = TempleScrollBar
+            Widget.get_line_filters = _tos_line_filters
+            Widget.render_lines = _tos_render_lines
+            self.theme = "textual-light"
+            self._yellow = False
+
+        def on_mount(self) -> None:  # (Textual runs CommanderApp.on_mount as well)
+            self.set_interval(0.25, self._blink)  # TempleOS blinks at 2.5 Hz: a little slower here (2 Hz)
+
+        def _blink(self) -> None:
+            """The text cursor alternates black and yellow instead of hiding; red warnings blink."""
+            self._yellow = _TosBlink.on = not self._yellow
+            seen, _TosBlink.seen = _TosBlink.seen, set()
+            for widget in seen:
+                if widget.is_attached:
+                    widget.refresh()  # painting it again records it again while it shows a warning
+            if isinstance(widget := self.focused, (TextArea, Input)):
+                widget.cursor_blink = False
+                widget.set_class(self._yellow, "-yellow")
+            elif widget is not None and widget.id and widget.id.startswith("shell-widget-"):
+                widget.refresh()  # its cursor follows _yellow
+
 
 # --- Startup ----------------------------------------------------------------------
 
@@ -7269,6 +7575,10 @@ def build_parser() -> argparse.ArgumentParser:
                         help="Plain CLI mode without the TUI (no session file unless --session is given)")
     parser.add_argument("--no-mouse", action="store_true",
                         help="TUI without mouse support, leaving selection and paste to the terminal")
+    look = parser.add_mutually_exclusive_group()
+    look.add_argument("--norton", action="store_true", help="Norton Commander look: blue panels (the default)")
+    look.add_argument("--templeos", action="store_true",
+                      help="TempleOS look: white windows, blue text, grey pop-ups, status line on top")
     parser.add_argument("--no-markdown", action="store_true",
                         help="TUI: show the agent's replies as they come, without rendering their markdown "
                              "(headings, emphasis, lists, code blocks, tables)")
@@ -7408,7 +7718,7 @@ def main():
             sys.exit(1)
         sys.exit(_EXIT_CODES.get(status, 1))
 
-    app = CommanderApp(args, history)
+    app = (TempleApp if args.templeos else CommanderApp)(args, history)
 
     def on_signal(signum, _frame):
         app.save_sessions(f"signal_{signum}")

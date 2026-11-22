@@ -1,6 +1,21 @@
 AI-Commander changelog
 ======================
 
+3.0.0
+-----
+
+- New TempleOS skin (--templeos; --norton, the Norton Commander look, stays
+  the default): white windows with blue text in double-line borders (black
+  on light blue), the 16 TempleOS colors and DolDoc text colors (red links,
+  green prompt), grey pop-ups, and the status line on top (WHITE on BLUE)
+  led by the weekday, date and time. Cursors blink black and yellow, red
+  warnings and AUTO-APPROVE blink, the "Prompt" title blinks, agent tab
+  titles scroll, each pane's name runs down its left border, and scroll
+  bars are a single white cell with a black square. Only the look changes.
+- The two panes share one border: the column between them is a single ║
+  joined to their top and bottom borders (it was three columns), and it is
+  the handle that resizes them. A zoomed pane gets its own border back.
+
 2.9.1
 -----
 
