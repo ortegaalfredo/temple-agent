@@ -4,6 +4,10 @@ Temple Agent changelog
 3.0.5
 -----
 
+- Started without an endpoint, Temple Agent prints a quick start (what is
+  missing, how to connect to OpenAI, OpenRouter or a local llama.cpp, vLLM,
+  Ollama or LM Studio server, and common ways to run it) instead of a usage
+  error; --help ends with the same examples.
 - TempleOS skin: everything but the top status line has a white background
   (frames, tab rows, scroll bars and the function-key bar were light blue),
   so titles, hints and tab labels are blue, and the borders blue on white.

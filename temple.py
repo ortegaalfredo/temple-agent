@@ -7541,11 +7541,60 @@ def _on_signals(handler) -> None:
                 signal.signal(sig, handler)
 
 
+def _prog() -> str:
+    """How the user started us, for examples: temple-agent, python3 temple.py, or a launcher's $AIC_PROG."""
+    if os.environ.get("AIC_PROG"):
+        return os.environ["AIC_PROG"]
+    name = os.path.basename(sys.argv[0] or "temple-agent")
+    return f"python3 {name}" if name.endswith(".py") else name
+
+
+def _examples(prog: str) -> str:
+    runs = [(f"{prog}", "the TUI: type tasks in its prompt"),
+            (f'{prog} "add tests for utils.py"', "the TUI, starting on that task"),
+            (f"{prog} --norton", "the TUI with the Norton Commander look (TempleOS is the default)"),
+            (f'{prog} --nogui "summarize this repo"', "plain terminal output; asks before each command"),
+            (f'{prog} --nogui --auto-approve --loop PROMPT.md --verify "make test"',
+             "repeat a task file until the check passes"),
+            (f"cat task.md | {prog} --json --auto-approve > events.jsonl", "JSON events, for scripts")]
+    width = max(len(cmd) for cmd, _ in runs if len(cmd) <= 44)
+    runs = "\n".join(f"  {cmd.ljust(width)}   {what}" if len(cmd) <= width else f"  {cmd}\n  {'':{width}}   {what}"
+                     for cmd, what in runs)
+    return f"""Connect it to any OpenAI-compatible endpoint (--api-base, --api-key):
+
+  OpenAI
+    {prog} --api-base https://api.openai.com/v1 --api-key sk-... --model MODEL
+  OpenRouter (and other hosted APIs)
+    {prog} --api-base https://openrouter.ai/api/v1 --api-key sk-or-... --model MODEL
+  A local server: llama.cpp (port 8080), vLLM (8000), Ollama (11434), LM Studio (1234)
+    {prog} --api-base http://localhost:8080/v1 --api-key none
+
+  Without --model it asks the server for its models and lets you pick one.
+  Or set them once, e.g. in ~/.bashrc, and just run {prog}:
+    export AIC_API_BASE=https://api.openai.com/v1   (or OPENAI_BASE_URL)
+    export AIC_API_KEY=sk-...                       (or OPENAI_API_KEY)
+    export AIC_MODEL=MODEL
+
+Then:
+{runs}"""
+
+
+def _quickstart(missing: list[str]) -> str:
+    """What a run without an endpoint prints instead of a usage error."""
+    prog = _prog()
+    return (f"Temple Agent {__version__}: an AI agent that plans, runs shell commands and edits files in your "
+            f"terminal.\n\nMissing: {' and '.join(missing)}.\n\n{_examples(prog)}\n\n"
+            f"All options: {prog} --help\n")
+
+
 def build_parser() -> argparse.ArgumentParser:
     """The command line (also listed on the TUI's Help tab)."""
     parser = argparse.ArgumentParser(
-        description="Temple Agent - a ralph-loop AI agent",
-        epilog="--nogui exit status: 0 task complete, 1 error, 2 step/iteration limit reached, 130 stopped.")
+        prog=_prog(), formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Temple Agent: an AI agent that plans, runs shell commands and edits files in your terminal, "
+                    "through any OpenAI-compatible API.",
+        epilog=f"{_examples(_prog())}\n\n--nogui exit status: 0 task complete, 1 error, 2 step/iteration limit "
+               f"reached, 130 stopped.")
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     parser.add_argument("--api-base", default=os.environ.get("AIC_API_BASE") or os.environ.get("OPENAI_BASE_URL"),
                         help="API base URL (default: $AIC_API_BASE or $OPENAI_BASE_URL)")
@@ -7640,9 +7689,11 @@ def main():
             import ctypes
             ctypes.CDLL(None).prctl(4, 0)  # PR_SET_DUMPABLE = 0
     args.api_key = args.api_key or env_key or openai_key
-    for name, env in (("api_base", "AIC_API_BASE"), ("api_key", "AIC_API_KEY")):
-        if not getattr(args, name):
-            parser.error(f"--{name.replace('_', '-')} is required (or set ${env})")
+    missing = [f"--{name.replace('_', '-')} (or ${env})" for name, env in
+               (("api_base", "AIC_API_BASE"), ("api_key", "AIC_API_KEY")) if not getattr(args, name)]
+    if missing:  # most often a first run: show how to connect rather than a usage error
+        sys.stderr.write(_quickstart(missing))
+        sys.exit(2)
     args.nogui = args.nogui or args.json
     if args.nogui and not args.request and not args.loop and not sys.stdin.isatty():
         args.request = [sys.stdin.read().strip()]  # cat PROMPT.md | temple-agent --nogui
