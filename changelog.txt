@@ -1,6 +1,16 @@
 Temple Agent changelog
 ======================
 
+3.0.5
+-----
+
+- TempleOS skin: everything but the top status line has a white background
+  (frames, tab rows, scroll bars and the function-key bar were light blue),
+  so titles, hints and tab labels are blue, and the borders blue on white.
+  The scroll bar marker is a yellow cell with a small blue square.
+- The active agent tab's scrolling title is white on blue, and the "Prompt"
+  title blinks between blue on white and white on blue.
+
 3.0.4
 -----
 

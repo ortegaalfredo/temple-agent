@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "3.0.4"
+__version__ = "3.0.5"
 
 import argparse
 import asyncio
@@ -4720,7 +4720,7 @@ if _TEXTUAL_AVAILABLE:
 
         def __init__(self, **kwargs):
             super().__init__(**kwargs)
-            self._lines = ""
+            self._lines, self._label_rows = "", []
 
         def sync(self, left: Widget | None, right: Widget | None, label: str = "") -> None:
             """Draw the line beside *left* and *right* (the panes, joined to their borders)."""
@@ -4734,7 +4734,7 @@ if _TEXTUAL_AVAILABLE:
             double = [pane is not None and focused is not None and pane in focused.ancestors_with_self
                       for pane in (left, right)]
             top = right.region.y if right is not None else 0
-            rows = []
+            rows, label_rows = [], []
             for y in range(self.region.y, self.region.bottom):
                 ends = side(left, y), side(right, y)
                 char = self._JOINS.get(ends, "║" if "in" in ends else " ")
@@ -4742,14 +4742,18 @@ if _TEXTUAL_AVAILABLE:
                     char = char.translate(self._SINGLE)
                 if char == "║" and 0 < y - top <= len(label):
                     char = label[y - top - 1]
+                    label_rows.append(len(rows))
                 rows.append(char)
             self.set_class(any(double), "-focus")
-            if (lines := "\n".join(rows)) != self._lines:
-                self._lines = lines
+            if (lines := "\n".join(rows)) != self._lines or label_rows != self._label_rows:
+                self._lines, self._label_rows = lines, label_rows
                 self.refresh()
 
-        def render(self) -> str:
-            return self._lines
+        def render(self) -> Text:
+            text = Text(self._lines)
+            for row in self._label_rows:  # the pane's name: black (TempleOS) whatever the line's color
+                text.stylize("bold #140000", 2 * row, 2 * row + 1)
+            return text
 
         @property
         def split(self) -> float:
@@ -5318,7 +5322,7 @@ if _TEXTUAL_AVAILABLE:
                     label = f" Status ({tab.unseen_changes()}) "
                 elif tab and pane != active and pane == "tools" and tab.tools_unseen:
                     label = " Tools ● "
-                style = (("bold #0000aa on #ffff55" if pane == active else "#ffff55 on #5555ff") if self.app.TEMPLEOS
+                style = (("bold #0000aa on #ffff55" if pane == active else "#0000aa on #ffffff") if self.app.TEMPLEOS
                          else "bold #000000 on #06989a" if pane == active else "#e5e5e5 on #0b2f5e")
                 self._add(text, label, style, f"show_pane('{pane}')")
                 text.append(" ")
@@ -5346,16 +5350,16 @@ if _TEXTUAL_AVAILABLE:
                     title = _marquee(title, min(room, len(title) + 10))
                 elif cell_len(title) > room:
                     title = title[:max(1, room - 1)] + "…"
-                style = (("bold #0000aa on #140000" if self.app.TEMPLEOS else "bold #000000 on #06989a")
+                style = (("bold #ffffff on #0000aa" if self.app.TEMPLEOS else "bold #000000 on #06989a")
                          if tab is active else
                          f"bold #000000 on {_pulse('#ffd75f', '#8a6d1f')}" if tab.waiting
-                         else "#ffff55 on #5555ff" if self.app.TEMPLEOS else "#e5e5e5 on #0b2f5e")
+                         else "#0000aa on #ffffff" if self.app.TEMPLEOS else "#e5e5e5 on #0b2f5e")
                 self._add(text, f" {pos} {mark}{title}", style, f"select_tab({pos})")
                 if close:
                     self._add(text, close, style, f"close_tab({pos})")
                 text.append(" ", style)
                 text.append(" ")
-            self._add(text, " + ", "bold #ffff55 on #5555ff" if self.app.TEMPLEOS else "bold #ffff5f on #0b2f5e",
+            self._add(text, " + ", "bold #0000aa on #ffffff" if self.app.TEMPLEOS else "bold #ffff5f on #0b2f5e",
                       "new_tab")
             if width - text.cell_len > 17:
                 text.append(" ^T new ^G go to", "#6f8fc0")
@@ -7208,9 +7212,9 @@ if _TEXTUAL_AVAILABLE:
     _TOS_DARK = {0, 1, 2, 3, 4, 5, 6, 8, 9}  # backgrounds that take the light variant of a text color
     # Temple Agent's own colors as backgrounds, and as text color families (dark, light variant).
     # Markers (matched loosely: a pop-up dims the screen under it a little): #140000 is a true black, as
-    # Temple Agent's #000000 turns white, #000014 border lines are black on light blue and #001400 is a
-    # blinking black.
-    _TOS_BG = {"12488b": 15, "0b2f5e": 15, "123f78": 15, "1d5a9e": 15, "000000": 15, "06989a": 9,
+    # Temple Agent's #000000 turns white, #000014 border lines are blue on white and #001400 is the
+    # blinking Prompt title (blue on white, then white on blue).
+    _TOS_BG = {"12488b": 15, "0b2f5e": 15, "123f78": 15, "1d5a9e": 15, "000000": 15, "06989a": 15,
                "5fd7ff": 3, "5fd787": 2, "af0000": 4, "87d7ff": 14, "ffd75f": 14, "1f5fa8": 7, "8a6d1f": 6}
     _TOS_FAMILY = {"text": (1, 15), "gray": (8, 7), "blue": (1, 15), "cyan": (3, 11), "green": (2, 10),
                    "red": (4, 12), "purple": (5, 13), "yellow": (6, 14)}
@@ -7238,7 +7242,7 @@ if _TEXTUAL_AVAILABLE:
         if g < 5 and abs(r + b - 20) < 6 and min(r, b) < 5:  # a marker
             return "black" if r > b else "border"
         if r < 5 and b < 5 and abs(g - 20) < 6:
-            return "blinkblack"
+            return "blinktitle"
         return "%02x%02x%02x" % (r, g, b)
 
     def _tos_family(rgb: str) -> str:
@@ -7278,8 +7282,6 @@ if _TEXTUAL_AVAILABLE:
         if link and family in ("blue", "cyan"):
             family = "red"
         dark, light = _TOS_FAMILY[family]
-        if family == "gray" and bg == 9:  # LTGRAY hints would fade into the light blue frames
-            return 0
         return light if bg in _TOS_DARK else dark
 
     def _tos_style(style: Style | None, base: str | None) -> tuple[Style, bool]:
@@ -7289,13 +7291,13 @@ if _TEXTUAL_AVAILABLE:
         if out is None:
             style = style or Style()
             text, back = _tos_hex(style.color), _tos_hex(style.bgcolor) or base
-            blink = text in _TOS_BLINK or back in _TOS_BLINK or text == "blinkblack"
+            blink = text in _TOS_BLINK or back in _TOS_BLINK or text == "blinktitle"
             if style.reverse:  # map what shows (the text color is the cell's background), then un-reverse
                 text, back = back, text or "0000aa"
-            bg = 0 if back == "black" else 9 if text == "border" else _tos_bg(back)
-            fg = 0 if text in ("black", "border", "blinkblack") else _tos_fg(text, bg, bool(style.underline))
+            bg = 0 if back == "black" else 15 if text == "border" else _tos_bg(back)
+            fg = 0 if text == "black" else 1 if text in ("border", "blinktitle") else _tos_fg(text, bg, bool(style.underline))
             if blink and _TosBlink.on:  # TempleOS blinks by swapping the text and background colors
-                fg, bg = bg, fg
+                fg, bg = (15, 1) if text == "blinktitle" else (bg, fg)  # (the Prompt title: white on blue)
             out = (style + Style(color=_TOS_COLORS[fg], bgcolor=_TOS_COLORS[bg], reverse=False), blink)
             if len(_tos_cache) > 8192:
                 _tos_cache.clear()
@@ -7327,7 +7329,7 @@ if _TEXTUAL_AVAILABLE:
         strips = _widget_render_lines(widget, crop)
         label = _TOS_LABELS.get((widget.id or "").rpartition("-")[0])
         if label and crop.x == 0 and widget.styles.border_left[0] not in ("", "none", "hidden"):
-            style = Style(bold=True, color=_TOS_COLORS[0], bgcolor=_TOS_COLORS[9])
+            style = Style(bold=True, color=_TOS_COLORS[0], bgcolor=_TOS_COLORS[15])
             label = label[:max(0, widget.outer_size.height - 2)]
             for i, strip in enumerate(strips):
                 if 1 <= crop.y + i <= len(label):
@@ -7337,7 +7339,7 @@ if _TEXTUAL_AVAILABLE:
     from textual.scrollbar import ScrollBar, ScrollBarRender
 
     class TempleScrollBar(ScrollBarRender):
-        """TempleOS's scroll bar: a white cell with a black square in it, on a blue track."""
+        """The scroll bar: a yellow cell with a blue square in it, on the track (TempleOS marks the spot)."""
 
         @classmethod
         def render_bar(cls, size: int = 25, virtual_size: float = 50, window_size: float = 20, position: float = 0,
@@ -7348,7 +7350,7 @@ if _TEXTUAL_AVAILABLE:
             if size and window_size and virtual_size > window_size:
                 at = round((size - 1) * min(1.0, max(0.0, position / (virtual_size - window_size))))
             segments = ([Segment(blank, Style(bgcolor=back_color, meta=up))] * min(at, size)
-                        + [Segment("■".center(len(blank)), Style(color="#140000", bgcolor="#ffffff",
+                        + [Segment("▪".center(len(blank)), Style(color="#0000aa", bgcolor="#ffff55",
                                                                  meta={"@mouse.down": "grab"}))] * (at < size)
                         + [Segment(blank, Style(bgcolor=back_color, meta=down))] * max(0, size - at - 1))
             if vertical:
@@ -7356,8 +7358,8 @@ if _TEXTUAL_AVAILABLE:
             return Segments((segments + [Segment.line()]) * thickness, new_lines=False)
 
     _B, _W, _G, _Y = "#0000AA", "#FFFFFF", "#AAAAAA", "#FFFF55"  # BLUE, WHITE, LTGRAY, YELLOW
-    _L = "#5555FF"  # LTBLUE: the panes' frames, tab rows and scroll bars (the status line keeps BLUE)
-    _K = "#000014"  # border lines: black on LTBLUE
+    _L = _W  # the panes' frames, tab rows and scroll bars (only the status line is BLUE)
+    _K = "#000014"  # border lines: blue on white
     _TEMPLE_CSS = f"""
     Screen {{ background: {_W} !important; }}
     * {{ scrollbar-background: {_L} !important; scrollbar-background-hover: {_L} !important;
@@ -7365,17 +7367,17 @@ if _TEXTUAL_AVAILABLE:
     ModalScreen {{ background: transparent !important; }}
     #status-bar {{ dock: top; background: {_B} !important; color: {_W} !important; }}
     #fkeys, StatusPane .head {{ background: {_W} !important; }}
-    #agent-tabs, #tabs {{ background: {_L} !important; color: {_Y} !important; }}
+    #agent-tabs, #tabs {{ background: {_L} !important; color: {_B} !important; }}
     Splitter {{ background: {_L} !important; color: {_K} !important; }}
-    Splitter:hover, Splitter.-drag {{ color: {_Y} !important; }}
+    Splitter:hover, Splitter.-drag {{ color: {_B} !important; background: {_Y} !important; }}
     #panels.-joined #agent-stack > OutputLog {{ border-right: none !important; }}
     #panels.-joined #switcher > * {{ border-left: none !important; }}
     OutputLog, ShellWidget, StatusPane, HelpPane, PromptArea, FindBar {{
         background: {_W} !important; color: {_B} !important; border: double {_K} !important; }}
     OutputLog, ShellWidget, StatusPane, HelpPane, PromptArea, FindBar, TodoPanel, #switcher-box, #models,
-    #approval, #quit, #search, #settings, #help {{ border-title-color: {_W} !important;
+    #approval, #quit, #search, #settings, #help {{ border-title-color: {_B} !important;
         border-title-background: {_L} !important; border-title-style: bold !important;
-        border-subtitle-color: {_W} !important; border-subtitle-background: {_L} !important; }}
+        border-subtitle-color: {_B} !important; border-subtitle-background: {_L} !important; }}
     PromptArea {{ border-title-color: #001400 !important; }}
     OutputLog:focus, ShellWidget:focus, StatusPane:focus-within, HelpPane:focus, PromptArea:focus,
     ContextScreen OutputLog {{ border: double {_K} !important; }}
@@ -7404,7 +7406,7 @@ if _TEXTUAL_AVAILABLE:
 
     class TempleApp(CommanderApp):
         """Temple Agent in TempleOS clothes (the default look): white windows with blue
-        text in double-line borders (black on light blue), grey pop-ups, and the status
+        text in double-line borders (blue on white), grey pop-ups, and the status
         line on top (WHITE on BLUE) led by the date and time, as TempleOS draws it."""
 
         CSS = CommanderApp.CSS + _TEMPLE_CSS
