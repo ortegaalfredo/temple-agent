@@ -8,7 +8,7 @@ plain CLI (--nogui, ConsoleSink).
 """
 from __future__ import annotations
 
-__version__ = "3.0.2"
+__version__ = "3.0.3"
 
 import argparse
 import asyncio

@@ -1,8 +1,10 @@
 Temple Agent changelog
 ======================
 
-3.0.2
+3.0.3
 -----
+
+(3.0.2 was tagged before these changes were committed and never published.)
 
 - The script is now temple.py (was aic.py): run it as python3 temple.py, or
   install the temple-agent package (pip install temple-agent) and run
