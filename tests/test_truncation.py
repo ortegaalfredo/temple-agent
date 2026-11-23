@@ -1790,6 +1790,21 @@ class TestRunner:
         self.check("params: adaptations do not use up the retry attempts", len(fake4.calls) == 5,
                    f"calls={len(fake4.calls)}")
 
+    def test_help_and_quickstart(self):
+        """--help and the no-endpoint quick start build for any program name, a long one included."""
+        saved = os.environ.get("AIC_PROG")
+        try:
+            for prog in ("temple-agent", "python3 temple.py", "./aic-portable-3.0.5-linux-x86_64-and-longer.run"):
+                os.environ["AIC_PROG"] = prog
+                text = aic.build_parser().format_help() + aic._quickstart(["--api-key (or $AIC_API_KEY)"])
+                self.check(f"help: builds for {prog!r}", f"{prog} --api-base https://api.openai.com/v1" in text
+                           and "Missing: --api-key" in text and f"{prog} --norton" in text, text[-400:])
+        finally:
+            if saved is None:
+                os.environ.pop("AIC_PROG", None)
+            else:
+                os.environ["AIC_PROG"] = saved
+
     def test_sampling_settings(self):
         # --temperature, --top-k...: OpenAI's go top-level, the rest in extra_body; a rejected one goes for good.
         class Rejected(Exception):
@@ -3617,6 +3632,7 @@ def main():
     runner.test_todo_reminder()
     runner.test_background_jobs()
     runner.test_review_fixes()
+    runner.test_help_and_quickstart()
 
     if not args.skip_live:
         print("\n=== Live integration tests (network) ===")

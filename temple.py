@@ -7557,7 +7557,7 @@ def _examples(prog: str) -> str:
             (f'{prog} --nogui --auto-approve --loop PROMPT.md --verify "make test"',
              "repeat a task file until the check passes"),
             (f"cat task.md | {prog} --json --auto-approve > events.jsonl", "JSON events, for scripts")]
-    width = max(len(cmd) for cmd, _ in runs if len(cmd) <= 44)
+    width = max((len(cmd) for cmd, _ in runs if len(cmd) <= 44), default=4)  # a long name: each on its own line
     runs = "\n".join(f"  {cmd.ljust(width)}   {what}" if len(cmd) <= width else f"  {cmd}\n  {'':{width}}   {what}"
                      for cmd, what in runs)
     return f"""Connect it to any OpenAI-compatible endpoint (--api-base, --api-key):

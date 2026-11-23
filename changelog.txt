@@ -1,6 +1,13 @@
 Temple Agent changelog
 ======================
 
+Unreleased
+----------
+
+- The help and the quick start no longer crash at startup when the program
+  is started under a name longer than 44 characters (e.g. through a launcher
+  that sets $AIC_PROG); each example then gets its own line.
+
 3.0.5
 -----
 
