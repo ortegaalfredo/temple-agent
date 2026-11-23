@@ -17,7 +17,7 @@ It supports two presentation modes:
   foldable output, clickable links) and `Ctrl+F` search.
 - **`--nogui`** — the original direct-CLI behaviour (stdout/stderr, no TUI).
 
-![Temple Agent TUI in the default TempleOS skin](aic-templeos.png)
+![Temple Agent in the default TempleOS skin: it adds a /health endpoint, tests it and draws the request flow](aic-templeos.gif)
 
 A similar session in the Norton Commander skin (`--norton`):
 
